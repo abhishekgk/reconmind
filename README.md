@@ -1,0 +1,231 @@
+# ReconMind
+
+**An open-source, local-LLM recon orchestrator that helps you _learn_ security research.**
+
+ReconMind is built for hunters who can't afford paid courses or cloud AI. It runs
+entirely on your laptop: it drives the best free recon tools, aggregates
+subdomains from a dozen public sources, and uses a **local** language model (via
+[Ollama](https://ollama.com)) as a patient mentor that explains what the results
+mean and what to study next. No API keys, no subscriptions, no data leaving your
+machine.
+
+> ⚖️ **Only scan assets you own or are explicitly authorized to test** — for
+> example, the in-scope targets of a bug-bounty program. ReconMind queries public
+> OSINT sources and performs DNS lookups; use it responsibly and follow each
+> program's rules and responsible-disclosure policy.
+
+---
+
+## What it does
+
+Give it a domain (e.g. `example.com`) and ReconMind discovers assets across
+**every dimension**, not just subdomain names:
+
+1. **Names** — subdomains from many sources at once:
+   - Keyless HTTP OSINT: crt.sh, certspotter, hackertarget, rapiddns, AlienVault
+     OTX, anubis, urlscan, Wayback Machine.
+   - Tools you already have: `subfinder`, `assetfinder` (fast); `amass`, `gau`,
+     `github-subdomains` (deep mode).
+   - **Keyed sources** you enable in the UI: Shodan, VirusTotal, SecurityTrails,
+     Chaos, Censys, Netlas, LeakIX, FullHunt, BinaryEdge, BeVigil.
+2. **Guessed** (active mode) — DNS bruteforce + permutation guessing (`api` →
+   `api-dev`, `api-staging`, …), resolved with `puredns`/`dnsx` or pure Python.
+3. **Resolve** every name to IPs.
+4. **Live probe** — which hosts serve HTTP/HTTPS (status, title, server).
+5. **Content mining** — pulls more names out of what live hosts serve: CSP
+   headers, `robots.txt`, `sitemap.xml`, `security.txt`, linked JavaScript, and
+   **TLS certificate SANs**.
+6. **Network** — maps every IP to its **ASN, BGP netblock and owning org**
+   (keyless, via Team Cymru), grabs PTR records, and — with a Shodan key — the
+   **open ports and services** per IP. Deep mode adds a bounded reverse-DNS sweep
+   of discovered netblocks to find sibling hosts.
+7. **Related domains** — reverse-WHOIS (Whoxy key) and content links surface other
+   root domains belonging to the target, ready to scan next.
+8. **Deep enumeration** (crawl mode) — crawls every live host with `katana`
+   (parsing linked JavaScript) plus `gau`/`waybackurls` archives, and lists the
+   discovered **URLs/endpoints** with host, parameters, extension and source —
+   filterable in its own tab.
+
+Then the local LLM **explains** the whole surface — names, hosting, exposed
+services — flags what to study first and why, and suggests safe next steps. It's a
+teacher, not an autopilot.
+
+The web UI shows it all in five filterable tabs: **Subdomains · IPs & Services ·
+ASNs / Netblocks · Endpoints · Related domains**, with a live progress stream.
+You can also **⬆ Import** an exported scan JSON to view/analyze it, and browse
+every past scan under **🕘 History** (each loads back into the dashboard).
+
+Everything degrades gracefully: missing tools are skipped, keyless sources always
+run, a bad/expired key never sinks a scan, and the LLM panel shows setup help
+instead of crashing if Ollama isn't running.
+
+## API keys — bring your own
+
+**This repository ships with zero API keys.** ReconMind never hardcodes secrets:
+every key you use is *yours*, entered by you, and stored only on your own machine
+in `~/.reconmind/keys.json` (`chmod 600`). Nothing is committed to git — the
+`.gitignore` blocks `keys.json` and all scan data as a second line of defence.
+It works out of the box with no keys at all (keyless sources); keys just unlock
+more sources.
+
+Click **⚙ API keys** in the UI. Add a key for any supported service, click **Save
+& apply**, and ReconMind immediately:
+
+- stores it locally (`~/.reconmind/keys.json`, `chmod 600` — nothing leaves your
+  machine except the tool's own API calls),
+- regenerates `subfinder`'s `provider-config.yaml` so subfinder starts using it,
+- exports the right env vars (`SHODAN_API_KEY`, `GITHUB_TOKEN`, `PDCP_API_KEY`, …)
+  for the CLI tools, and
+- enables direct API calls for Shodan (ports/services), VirusTotal, SecurityTrails,
+  Chaos, GitHub code search and Whoxy reverse-WHOIS.
+
+Every service is optional. More keys → more sources → more assets. The panel shows
+a "get a key" link and a configured/not-set badge for each.
+
+## Screenshot of the flow
+
+```
+target: example.com   [ ] deep (amass)   [ ] active bruteforce   [Start recon]
+
+ 22 subdomains   2 resolved   2 live   38s
+ ▸ Probing live hosts
+ subfinder 20   rapiddns 2   certspotter 2   hackertarget 2   urlscan 2 …
+
+ ★ = commonly interesting to study first
+ Host                     Live  Status  Title            Server      Sources
+ example.com              ●     200     Example Domain   cloudflare  crt.sh, subfinder…
+ www.example.com          ●     200     Example Domain   cloudflare  rapiddns, subfinder…
+```
+
+## Install
+
+ReconMind runs on **macOS, Linux and Windows**. Python 3.10+ is the only hard
+requirement; every external tool is optional.
+
+### Quick install (recommended)
+
+The installer sets up a virtualenv, installs the Python deps, and *offers* to add
+the optional Go recon tools and Ollama. It never touches API keys.
+
+**macOS / Linux**
+```bash
+git clone https://github.com/<your-username>/reconmind.git && cd reconmind
+./install.sh
+```
+
+**Windows (PowerShell)**
+```powershell
+git clone https://github.com/<your-username>/reconmind.git; cd reconmind
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+### Manual install (any OS)
+
+```bash
+python3 -m venv .venv
+# macOS/Linux:   source .venv/bin/activate
+# Windows (PS):  .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+```
+
+That's the minimum — ReconMind already runs on its keyless sources.
+
+### Optional external tools (all free)
+
+The UI's **Toolbox** panel shows what's installed and the exact, OS-specific
+install command for anything missing. The Go tools install identically everywhere
+(Go must be present — [go.dev/dl](https://go.dev/dl/)):
+
+```bash
+go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
+go install github.com/tomnomnom/assetfinder@latest
+go install github.com/projectdiscovery/httpx/cmd/httpx@latest
+go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
+go install github.com/lc/gau/v2/cmd/gau@latest
+go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
+go install github.com/projectdiscovery/katana/cmd/katana@latest
+go install github.com/sensepost/gowitness@latest        # screenshots (needs Chrome)
+```
+
+| Tool | macOS | Linux | Windows |
+|------|-------|-------|---------|
+| **amass** | `brew install amass` | `go install github.com/owasp-amass/amass/v4/...@master` | `go install github.com/owasp-amass/amass/v4/...@master` |
+| **puredns** | `go install github.com/d3mondev/puredns/v2@latest` (+ `brew install massdns`) | same (+ build [massdns](https://github.com/blechschmidt/massdns)) | use WSL2 |
+| **Ollama** | `brew install ollama` | `curl -fsSL https://ollama.com/install.sh \| sh` | `winget install Ollama.Ollama` |
+
+> Go binaries land in `~/go/bin` (`%USERPROFILE%\go\bin` on Windows). ReconMind
+> looks there automatically — you don't have to touch your PATH. On Windows, a
+> few native-heavy tools (`puredns`, `massdns`, `amass` active mode) are smoothest
+> under **WSL2**; everything else, including all passive sources, runs natively.
+
+## Run
+
+```bash
+# macOS/Linux:   source .venv/bin/activate
+# Windows (PS):  .\.venv\Scripts\Activate.ps1
+python run.py
+# then open http://127.0.0.1:8710
+```
+
+## Configuration (all optional, via environment variables)
+
+| Variable               | Purpose                                          | Default            |
+|------------------------|--------------------------------------------------|--------------------|
+| `RECONMIND_HOST`       | Bind address                                     | `127.0.0.1`        |
+| `RECONMIND_PORT`       | Port                                             | `8710`             |
+| `RECONMIND_MODEL`      | Preferred Ollama model                           | first installed    |
+| `RECONMIND_WORDLIST`   | DNS bruteforce wordlist (for `active` mode)      | small built-in     |
+| `RECONMIND_RESOLVERS`  | Resolvers file for mass DNS                      | public fallback    |
+| `RECONMIND_DATA`       | Where scans are saved (JSON, one file per scan)  | `~/.reconmind/data`|
+| `OLLAMA_HOST`          | Ollama API URL                                   | `http://127.0.0.1:11434` |
+
+## How it's organized
+
+```
+reconmind/
+  config.py            # settings, tool-path discovery
+  tools.py             # detect installed CLI tools + install hints
+  keys.py              # API-key store + auto-wiring into tool configs
+  llm.py               # Ollama client + the "mentor" prompts
+  store.py             # save/load scans as JSON
+  recon/
+    sources.py         # keyless passive OSINT sources
+    keyed_sources.py   # Shodan/VT/SecurityTrails/Chaos/GitHub/Whoxy (need keys)
+    runners.py         # wrappers around subfinder/assetfinder/amass/gau/github-subdomains
+    resolve.py         # DNS resolution + live HTTP probing
+    bruteforce.py      # active DNS bruteforce
+    permute.py         # permutation guessing + resolve
+    content.py         # mine CSP/robots/sitemap/JS + TLS cert SANs
+    network.py         # IP -> ASN/CIDR/org, Shodan ports, reverse-DNS sweep
+    crawl.py           # deep crawl (katana/gau/waybackurls) -> endpoints
+    orchestrator.py    # the scan engine that ties it together + streams progress
+  server/
+    app.py             # FastAPI backend + SSE progress stream
+    static/            # single-page web UI (no build step)
+```
+
+Contributions welcome — every module is small and readable on purpose, so a
+newcomer can add a new source or tool in a few lines. Good first issues: add a new
+passive source to `recon/sources.py`, or a new tool wrapper to `recon/runners.py`.
+
+## Roadmap
+
+Already shipped: ✅ port scanning (`naabu`), ✅ endpoint discovery (`katana`/`gau`),
+✅ subdomain-takeover detection, ✅ screenshots (`gowitness`), ✅ Anthropic Claude
+as an optional mentor backend.
+
+Next up (contributions very welcome):
+
+- **Scan diff** — compare two scans of the same target to surface *new* subdomains,
+  IPs, ports and endpoints since last time.
+- **Markdown/HTML report export** — one-click, LLM-summarised attack-surface report.
+- **Continuous monitoring** — schedule a target and get notified on new assets.
+- **Nuclei integration** — opt-in, template-scoped passive checks on live hosts.
+- **`--json`/stdout mode for CI** and a Dockerfile for zero-setup runs.
+- **More passive sources** — the easiest first PR (`recon/sources.py`).
+
+See [`docs/ENHANCEMENTS.md`](docs/ENHANCEMENTS.md) for the full, prioritised idea list.
+
+## License
+
+MIT — free to use, learn from, and build on.

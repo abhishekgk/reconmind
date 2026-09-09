@@ -1,0 +1,31 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# --- ReconMind runtime data (NEVER commit — may contain keys & scan results) ---
+# All user state lives in ~/.reconmind, but guard the repo anyway in case a user
+# points RECONMIND_DATA at the project folder or drops keys/wordlists here.
+data/
+shots/
+keys.json
+*.keys.json
+subfinder-provider-config.yaml
+resolvers.txt
+wordlist.txt
+.env
+.env.*
+*.scan.json
+
+# --- Editor / OS ---
+.DS_Store
+.idea/
+.vscode/
+.obsidian/
+*.swp
