@@ -151,6 +151,56 @@ async def wayback(client, domain):
     return _clean(hosts, domain)
 
 
+async def subdomain_center(client, domain):
+    """api.subdomain.center — a keyless aggregator (crt.sh + passive DNS)."""
+    r = await _get(client, f"https://api.subdomain.center/?domain={domain}", timeout=60)
+    if not r:
+        return set()
+    try:
+        return _clean(set(r.json()), domain)
+    except (json.JSONDecodeError, ValueError):
+        return set()
+
+
+async def columbus(client, domain):
+    """columbus.elmasy.com returns subdomain *labels*; we join them to the domain."""
+    r = await _get(client, f"https://columbus.elmasy.com/api/lookup/{domain}", timeout=45)
+    if not r:
+        return set()
+    try:
+        rows = r.json()
+    except (json.JSONDecodeError, ValueError):
+        return set()
+    hosts: set[str] = set()
+    for entry in rows if isinstance(rows, list) else []:
+        e = str(entry).strip().strip(".")
+        if not e or e == "*":
+            continue
+        # API returns bare labels ("www"); older/other responses may be full hosts.
+        hosts.add(e if e.endswith(domain) else f"{e}.{domain}")
+    return _clean(hosts, domain)
+
+
+async def threatminer(client, domain):
+    r = await _get(client, f"https://api.threatminer.org/v2/domain.php?q={domain}&rt=5",
+                   timeout=45)
+    if not r:
+        return set()
+    try:
+        return _clean(set(r.json().get("results", [])), domain)
+    except (json.JSONDecodeError, ValueError):
+        return set()
+
+
+async def digitorus(client, domain):
+    """certificatedetails.com (Digitorus) — subject-alt-names pulled from CT."""
+    r = await _get(client, f"https://certificatedetails.com/{domain}", timeout=45)
+    if not r:
+        return set()
+    hosts = set(re.findall(rf"[\w.\-]+\.{re.escape(domain)}", r.text))
+    return _clean(hosts, domain)
+
+
 # name -> coroutine factory
 SOURCES: dict[str, Callable[[httpx.AsyncClient, str], Awaitable[set[str]]]] = {
     "crt.sh": crtsh,
@@ -161,6 +211,10 @@ SOURCES: dict[str, Callable[[httpx.AsyncClient, str], Awaitable[set[str]]]] = {
     "certspotter": certspotter,
     "urlscan": urlscan,
     "wayback": wayback,
+    "subdomain.center": subdomain_center,
+    "columbus": columbus,
+    "threatminer": threatminer,
+    "digitorus": digitorus,
 }
 
 

@@ -86,6 +86,14 @@ async def alterx_resolve(domain: str, known: list[str]) -> set[str]:
     return _clean(out.splitlines(), domain)
 
 
+async def findomain(domain: str) -> set[str]:
+    """findomain — fast, keyless subdomain enumeration. -q prints hosts only."""
+    if not config.tool_path("findomain"):
+        return set()
+    out, _, _ = await _run(["findomain", "-t", domain, "-q"], timeout=120)
+    return _clean(out.splitlines(), domain)
+
+
 async def assetfinder(domain: str) -> set[str]:
     if not config.tool_path("assetfinder"):
         return set()
@@ -128,6 +136,7 @@ async def gau_hosts(domain: str) -> set[str]:
 RUNNERS = {
     "subfinder": subfinder,
     "assetfinder": assetfinder,
+    "findomain": findomain,
 }
 
 # Thorough but slow (or prone to rate-limit hangs); only run in "deep" mode.

@@ -23,9 +23,10 @@ Give it a domain (e.g. `example.com`) and ReconMind discovers assets across
 
 1. **Names** — subdomains from many sources at once:
    - Keyless HTTP OSINT: crt.sh, certspotter, hackertarget, rapiddns, AlienVault
-     OTX, anubis, urlscan, Wayback Machine.
-   - Tools you already have: `subfinder`, `assetfinder` (fast); `amass`, `gau`,
-     `github-subdomains` (deep mode).
+     OTX, anubis, urlscan, Wayback Machine, subdomain.center, columbus, threatminer,
+     digitorus.
+   - Tools you already have: `subfinder`, `assetfinder`, `findomain` (fast);
+     `amass`, `gau`, `github-subdomains` (deep mode).
    - **Keyed sources** you enable in the UI: Shodan, VirusTotal, SecurityTrails,
      Chaos, Censys, Netlas, LeakIX, FullHunt, BinaryEdge, BeVigil.
 2. **Guessed** (active mode) — DNS bruteforce + permutation guessing (`api` →
@@ -81,6 +82,25 @@ Click **⚙ API keys** in the UI. Add a key for any supported service, click **S
 
 Every service is optional. More keys → more sources → more assets. The panel shows
 a "get a key" link and a configured/not-set badge for each.
+
+## Choosing your model
+
+The header has a **model dropdown**. Pick **Automatic** (Claude if you've added an
+Anthropic key, otherwise your best local model), a specific **Claude** model
+(Opus / Sonnet / Haiku — only shown once a key is set), or any **Ollama** model
+installed on your machine. Your choice is saved to `~/.reconmind/settings.json` and
+persists across restarts. No key and no Ollama? Recon still runs fully — only the
+"Explain / Ask" mentor needs a model.
+
+## Reports & diffing
+
+- **Export → 📄 Markdown / 🌐 HTML report** turns the current scan into a clean,
+  shareable attack-surface report (also `reconmind <target> --report md|html` on the
+  CLI). Plus JSON, CSV, live-URL and nuclei-target exports.
+- **🔀 Diff** compares the loaded scan against any earlier scan of the same target
+  and shows what's **new** or **gone** — subdomains, live hosts, IPs, open ports,
+  endpoints, related domains — and exports the delta as Markdown. New assets are
+  where fresh bugs live.
 
 ## Screenshot of the flow
 
@@ -212,16 +232,16 @@ passive source to `recon/sources.py`, or a new tool wrapper to `recon/runners.py
 
 Already shipped: ✅ port scanning (`naabu`), ✅ endpoint discovery (`katana`/`gau`),
 ✅ subdomain-takeover detection, ✅ screenshots (`gowitness`), ✅ Anthropic Claude
-as an optional mentor backend.
+as an optional mentor backend, ✅ **model picker** (choose any local Ollama model or
+a Claude model from the header dropdown), ✅ **scan diff** (🔀 Diff — compare against
+any earlier scan of the target: new/removed subdomains, live hosts, IPs, ports,
+endpoints), ✅ **Markdown & HTML report export** (Export menu, or `--report md|html`).
 
 Next up (contributions very welcome):
 
-- **Scan diff** — compare two scans of the same target to surface *new* subdomains,
-  IPs, ports and endpoints since last time.
-- **Markdown/HTML report export** — one-click, LLM-summarised attack-surface report.
 - **Continuous monitoring** — schedule a target and get notified on new assets.
 - **Nuclei integration** — opt-in, template-scoped passive checks on live hosts.
-- **`--json`/stdout mode for CI** and a Dockerfile for zero-setup runs.
+- **Dockerfile** for zero-setup runs, and a `--quiet --json` CI mode.
 - **More passive sources** — the easiest first PR (`recon/sources.py`).
 
 See [`docs/ENHANCEMENTS.md`](docs/ENHANCEMENTS.md) for the full, prioritised idea list.

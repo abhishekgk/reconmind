@@ -7,13 +7,11 @@ attack surface; it never auto-exploits.
 
 ## Tier 1 — high value, contained (do these first)
 
-1. **Scan diff / change tracking.** `reconmind diff <target>` (and a UI toggle)
-   comparing the two most recent scans of a domain → new/removed subdomains, IPs,
-   open ports, endpoints. New assets are where bugs live; this is the single most
-   requested recon feature. Data is already timestamped JSON in `~/.reconmind/data`.
-2. **Markdown / HTML report export.** One click → a clean attack-surface report
-   (counts, live hosts table, notable ports/endpoints, LLM summary). `store.py`
-   already holds everything; add `report.py` + a CLI `--report md` flag + UI button.
+1. **✅ DONE — Scan diff / change tracking.** The 🔀 Diff button compares the loaded
+   scan against any earlier scan of the target → new/removed subdomains, live hosts,
+   IPs, open ports, endpoints and related domains, exportable as Markdown.
+2. **✅ DONE — Markdown / HTML report export.** `report.py` renders both; wired into
+   the Export menu and the CLI (`--report md|html`).
 3. **Dockerfile + `docker run` path.** Ships subfinder/httpx/etc. preinstalled so a
    newcomer gets the full toolkit with zero Go/Homebrew setup. Huge for adoption.
 4. **CI-friendly stdout mode.** `reconmind <target> --quiet --json` emitting only
@@ -47,9 +45,9 @@ attack surface; it never auto-exploits.
     in config, surfaced in the UI, so users stay within program rules.
 13. **Structured audit log.** Append every outbound query (source, target, time) to
     `~/.reconmind/audit.jsonl` — useful evidence that scanning stayed in-scope.
-14. **Better model routing for the mentor.** Let users pick the Claude model in the
-    UI and show token/cost estimate; default the public build to a cheaper model
-    (e.g. a Sonnet-class model) since new users may not have Opus access.
+14. **Model routing for the mentor.** ✅ *Partly done* — a header dropdown now lets
+    users pick any local Ollama model or a Claude model (Opus/Sonnet/Haiku), saved to
+    `~/.reconmind/settings.json`. Still open: show a token/cost estimate per model.
 15. **Result search / global filter** across all tabs, and CSV export per tab.
 
 ## Tier 4 — bigger bets

@@ -13,7 +13,7 @@ import argparse
 import asyncio
 import json
 
-from . import llm, store
+from . import llm, report, store
 from .recon.orchestrator import Scan, run_scan
 
 
@@ -46,6 +46,13 @@ async def _run(args) -> None:
     path = store.save(result)
     print(f"\n  saved → {path}")
 
+    if args.report:
+        ext = "html" if args.report == "html" else "md"
+        text = report.to_html(result) if ext == "html" else report.to_markdown(result)
+        rpath = path.with_suffix(f".{ext}")
+        rpath.write_text(text)
+        print(f"  report → {rpath}")
+
     if args.json:
         print(json.dumps(result, indent=2))
 
@@ -61,6 +68,7 @@ def main() -> None:
     p.add_argument("--deep", action="store_true", help="add amass + gau (slower)")
     p.add_argument("--active", action="store_true", help="DNS bruteforce guessed names")
     p.add_argument("--explain", action="store_true", help="LLM explanation of results")
+    p.add_argument("--report", choices=["md", "html"], help="also write a Markdown/HTML report next to the JSON")
     p.add_argument("--json", action="store_true", help="print full JSON result")
     p.add_argument("--serve", action="store_true", help="launch the web UI instead")
     args = p.parse_args()

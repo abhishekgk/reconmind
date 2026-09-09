@@ -20,11 +20,11 @@ import uuid
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import config, keys, llm, store, tools
+from .. import config, keys, llm, report, store, tools
 from ..recon.crawl import crawl as run_crawl
 from ..recon.orchestrator import Scan, run_scan
 
@@ -138,6 +138,23 @@ async def api_llm_status():
     return await llm.status()
 
 
+@app.get("/api/llm/models")
+async def api_llm_models():
+    """All models the user can pick on this machine (Claude + local Ollama)."""
+    return await llm.list_models()
+
+
+class ModelRequest(BaseModel):
+    model: str = "auto"
+
+
+@app.post("/api/llm/model")
+async def api_llm_set_model(req: ModelRequest):
+    """Persist the user's chosen LLM model ('auto' = let the tool decide)."""
+    llm.set_model(req.model)
+    return {"ok": True, "current": llm.selected_model()}
+
+
 @app.get("/api/keys/specs")
 async def api_key_specs():
     """Which services can be configured, and which currently are (no secrets)."""
@@ -223,6 +240,18 @@ async def api_scan(scan_id: str):
     if not scan:
         raise HTTPException(404, "scan not found")
     return scan.to_dict()
+
+
+@app.get("/api/scan/{scan_id}/report")
+async def api_scan_report(scan_id: str, fmt: str = "md"):
+    """Render the loaded scan as a Markdown or self-contained HTML report."""
+    scan = SCANS.get(scan_id)
+    if not scan:
+        raise HTTPException(404, "scan not found — load or run a scan first")
+    data = scan.to_dict()
+    if fmt == "html":
+        return Response(report.to_html(data), media_type="text/html; charset=utf-8")
+    return Response(report.to_markdown(data), media_type="text/markdown; charset=utf-8")
 
 
 @app.get("/api/scan/{scan_id}/events")

@@ -120,6 +120,23 @@
   .lightbox.show{display:flex} .lightbox img{max-width:95%;max-height:95%;border:1px solid var(--border)}
   .notein{background:var(--panel2);border:1px solid var(--border);color:var(--text);
     border-radius:4px;padding:3px 6px;font-size:11px;width:120px}
+  .modelsel{background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    border-radius:6px;padding:5px 8px;font-size:12px;max-width:220px}
+  .modelsel:focus{outline:none;border-color:var(--accent2)}
+  /* diff report */
+  .diffsel{background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    border-radius:6px;padding:8px 10px;font-size:13px;width:100%;margin:6px 0 12px}
+  .diffgrid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:600px){.diffgrid{grid-template-columns:1fr}}
+  .diffbox{border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--panel2)}
+  .diffbox h4{margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+  .diffbox.add h4{color:var(--accent)} .diffbox.rem h4{color:var(--bad)}
+  .diffbox ul{margin:0;padding-left:16px;max-height:220px;overflow:auto}
+  .diffbox li{font-family:var(--mono);font-size:12px;word-break:break-all}
+  .diffsum{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+  .diffsum .chip{background:var(--panel2);border:1px solid var(--border);border-radius:16px;
+    padding:3px 11px;font-size:12px}
+  .diffsum .chip b{color:var(--accent)} .diffsum .chip.r b{color:var(--bad)}
 </style>
 </head>
 <body>
@@ -128,6 +145,7 @@
   <span class="sub">local-LLM asset-discovery orchestrator · authorized, in-scope testing only</span>
   <span style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <span id="llmStatus" class="sub"></span>
+    <select id="modelSelect" class="modelsel" title="choose which LLM answers — Claude models (needs a key) or any local Ollama model"></select>
     <button class="ghost" id="importBtn">⬆ Import</button>
     <button class="ghost" id="historyBtn">🕘 History</button>
     <button class="ghost" id="keysBtn">⚙ API keys</button>
@@ -182,12 +200,15 @@
         <div class="dropdown">
           <button class="ghost sm" id="exportBtn">Export ▾</button>
           <div class="dropmenu" id="exportMenu">
+            <a data-exp="md">📄 Markdown report</a>
+            <a data-exp="html">🌐 HTML report</a>
             <a data-exp="json">JSON (full scan)</a>
             <a data-exp="csv">CSV (subdomains)</a>
             <a data-exp="live">Live URLs (.txt)</a>
             <a data-exp="nuclei">Nuclei targets (.txt)</a>
           </div>
         </div>
+        <button class="ghost sm" id="diffBtn" title="compare this scan with a previous scan of the same target">🔀 Diff</button>
       </div>
     </div>
     <div class="facets" id="facets"></div>
@@ -230,6 +251,22 @@
   </div>
 </div>
 
+<!-- Scan diff modal -->
+<div class="overlay" id="diffOverlay">
+  <div class="modal" style="max-width:820px">
+    <h2>Compare with a previous scan</h2>
+    <p class="muted">See what's <b style="color:var(--accent)">new</b> or
+      <b style="color:var(--bad)">gone</b> since an earlier scan of the same target —
+      new subdomains, live hosts, IPs, open ports and endpoints are where fresh bugs live.</p>
+    <select id="diffSelect" class="diffsel"></select>
+    <div id="diffResult"></div>
+    <div class="modalbtns">
+      <button class="ghost" id="diffExport" style="margin-right:auto">⬇ Export diff (.md)</button>
+      <button class="ghost" id="diffClose">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Screenshot lightbox -->
 <div class="lightbox" id="lightbox"><img id="lightboxImg" src="" alt=""></div>
 
@@ -246,6 +283,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=8"></script>
+<script src="/static/app.js?v=9"></script>
 </body>
 </html>

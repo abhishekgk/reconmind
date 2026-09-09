@@ -45,6 +45,24 @@ async function loadLlm(){
   else $("llmStatus").innerHTML = `LLM: local offline — <code>ollama serve</code> or add an Anthropic key`;
 }
 
+// ---------- model picker ----------
+async function loadModels(){
+  try{
+    const d = await (await fetch("/api/llm/models")).json();
+    const sel = $("modelSelect");
+    sel.innerHTML = (d.models||[]).map(m=>`<option value="${esc(m.id)}">${esc(m.label)}</option>`).join("");
+    sel.value = d.current || "auto";
+    if(!(d.models||[]).some(m=>m.id===sel.value)) sel.value="auto";
+  }catch(e){}
+}
+async function onModelChange(){
+  const model = $("modelSelect").value;
+  try{
+    await fetch("/api/llm/model",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model})});
+  }catch(e){}
+  loadLlm();  // refresh the status badge to reflect the new choice
+}
+
 // ---------- API keys modal ----------
 async function openKeys(){
   const data = await (await fetch("/api/keys/specs")).json();
@@ -349,9 +367,20 @@ async function ask(){
 
 // ---------- exports ----------
 function dl(name, text, type){ const b=new Blob([text],{type:type||"text/plain"}); const a=document.createElement("a"); a.href=URL.createObjectURL(b); a.download=name; a.click(); }
-function doExport(kind){
+async function doExport(kind){
   if(!scanData) return;
   const d=scanData.domain;
+  $("exportMenu").classList.remove("show");
+  if(kind==="md"||kind==="html"){
+    if(!currentScanId){ alert("Run or load a scan first."); return; }
+    try{
+      const res=await fetch(`/api/scan/${currentScanId}/report?fmt=${kind}`);
+      if(!res.ok){ alert("Report generation failed."); return; }
+      const text=await res.text();
+      dl(`${d}_recon.${kind==="html"?"html":"md"}`, text, kind==="html"?"text/html":"text/markdown");
+    }catch(e){ alert("Report generation failed."); }
+    return;
+  }
   if(kind==="json") dl(`${d}_recon.json`, JSON.stringify(scanData,null,2), "application/json");
   else if(kind==="csv"){
     const rows=[["host","live","status","title","server","tech","ips","takeover","sources"]];
@@ -382,6 +411,80 @@ async function runCrawl(){
   es.onerror=()=>{ es.close(); resetCrawlBtn(); refresh(currentScanId); };
 }
 
+// ---------- scan diff (compare with a previous scan) ----------
+let lastDiff = null;  // {prior, sets} for markdown export
+function scanSets(s){
+  const hosts = s.hosts||[];
+  const ips=new Set(), ports=new Set();
+  (s.ip_assets||[]).forEach(r=>{ ips.add(r.ip); (r.ports||[]).forEach(p=>ports.add(r.ip+":"+p)); });
+  hosts.forEach(h=>(h.ips||[]).forEach(ip=>ips.add(ip)));
+  return {
+    subdomains:new Set(hosts.map(h=>h.host)),
+    live:new Set(hosts.filter(h=>h.live).map(h=>h.host)),
+    ips, ports,
+    endpoints:new Set((s.endpoints||[]).map(e=>e.url)),
+    related:new Set(s.related_domains||[]),
+  };
+}
+function diffLists(cur, prior){ return { add:[...cur].filter(x=>!prior.has(x)).sort(), rem:[...prior].filter(x=>!cur.has(x)).sort() }; }
+async function openDiff(){
+  if(!scanData){ alert("Run, load, or import a scan first."); return; }
+  const list=((await (await fetch("/api/scans")).json()).scans||[])
+    .filter(s=>s.domain===scanData.domain && s.finished && s.finished!==scanData.finished);
+  const sel=$("diffSelect");
+  if(!list.length){
+    sel.innerHTML=`<option value="">— no earlier scans of ${esc(scanData.domain)} —</option>`;
+    $("diffResult").innerHTML=`<p class="muted">Run this target again later, then come back to see what changed.</p>`;
+  }else{
+    sel.innerHTML=`<option value="">Choose a scan to compare against…</option>`+list.map(s=>{
+      const c=s.counts||{}, when=s.finished?new Date(s.finished*1000).toLocaleString():s.file;
+      return `<option value="${esc(s.file)}">${esc(when)} · ${c.total||0} subs · ${c.live||0} live</option>`;
+    }).join("");
+    $("diffResult").innerHTML="";
+  }
+  $("diffOverlay").classList.add("show");
+}
+async function runDiff(file){
+  if(!file){ $("diffResult").innerHTML=""; lastDiff=null; return; }
+  $("diffResult").innerHTML=`<p class="muted">Comparing…</p>`;
+  let prior; try{ prior=await (await fetch(`/api/scans/${encodeURIComponent(file)}`)).json(); }
+  catch(e){ $("diffResult").innerHTML=`<p class="muted">Could not load that scan.</p>`; return; }
+  const cur=scanSets(scanData), old=scanSets(prior);
+  const cats=[
+    ["Subdomains","subdomains"],["Live hosts","live"],["IPs","ips"],
+    ["Open ports","ports"],["Endpoints","endpoints"],["Related domains","related"],
+  ];
+  const diffs={}; cats.forEach(([,k])=>diffs[k]=diffLists(cur[k], old[k]));
+  lastDiff={prior, diffs, cats};
+  const chips=cats.map(([label,k])=>{
+    const a=diffs[k].add.length, r=diffs[k].rem.length;
+    return `<span class="chip">${esc(label)} <b>+${a}</b></span>`+(r?`<span class="chip r"><b>−${r}</b></span>`:"");
+  }).join("");
+  const box=(cls,title,items)=>`<div class="diffbox ${cls}"><h4>${title} (${items.length})</h4>`+
+    (items.length?`<ul>${items.slice(0,300).map(x=>`<li>${esc(x)}</li>`).join("")}</ul>`
+      :`<p class="muted" style="margin:0">none</p>`)+`</div>`;
+  const sections=cats.filter(([,k])=>diffs[k].add.length||diffs[k].rem.length).map(([label,k])=>
+    `<h3 style="margin:14px 0 6px;color:var(--text)">${esc(label)}</h3>
+     <div class="diffgrid">${box("add","🆕 New",diffs[k].add)}${box("rem","➖ Gone",diffs[k].rem)}</div>`).join("");
+  $("diffResult").innerHTML=`<div class="diffsum">${chips}</div>`+
+    (sections||`<p class="muted">No differences — the two scans found the same assets.</p>`);
+}
+function exportDiff(){
+  if(!lastDiff){ alert("Pick a scan to compare against first."); return; }
+  const {prior,diffs,cats}=lastDiff;
+  const when=s=>s?new Date((s.finished||0)*1000).toLocaleString():"?";
+  let md=`# ReconMind diff — ${scanData.domain}\n\n`;
+  md+=`Comparing **current** (${when(scanData)}) against **previous** (${when(prior)}).\n\n`;
+  cats.forEach(([label,k])=>{
+    const {add,rem}=diffs[k]; if(!add.length&&!rem.length) return;
+    md+=`## ${label} (+${add.length} / −${rem.length})\n\n`;
+    add.forEach(x=>md+=`- 🆕 ${x}\n`);
+    rem.forEach(x=>md+=`- ➖ ${x}\n`);
+    md+=`\n`;
+  });
+  dl(`${scanData.domain}_diff.md`, md, "text/markdown");
+}
+
 // ---------- wire up ----------
 $("scanBtn").onclick=startScan;
 $("domain").addEventListener("keydown",e=>{if(e.key==="Enter")startScan();});
@@ -398,5 +501,11 @@ $("importBtn").onclick=()=>$("importFile").click(); $("importFile").onchange=imp
 $("historyBtn").onclick=openHistory; $("historyClose").onclick=()=>$("historyOverlay").classList.remove("show");
 $("historyOverlay").onclick=(e)=>{ if(e.target===$("historyOverlay")) $("historyOverlay").classList.remove("show"); };
 $("lightbox").onclick=()=>$("lightbox").classList.remove("show");
+$("modelSelect").onchange=onModelChange;
+$("diffBtn").onclick=openDiff;
+$("diffSelect").onchange=(e)=>runDiff(e.target.value);
+$("diffExport").onclick=exportDiff;
+$("diffClose").onclick=()=>$("diffOverlay").classList.remove("show");
+$("diffOverlay").onclick=(e)=>{ if(e.target===$("diffOverlay")) $("diffOverlay").classList.remove("show"); };
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); t.classList.add("active"); activeTab=t.dataset.tab; render(); });
-loadTools(); loadLlm(); setInterval(loadLlm,15000);
+loadTools(); loadLlm(); loadModels(); setInterval(loadLlm,15000);

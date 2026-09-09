@@ -12,6 +12,7 @@ the old code fed the model almost none of the dashboard.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 
@@ -23,13 +24,53 @@ from . import config, keys
 
 CLAUDE_MODEL = os.environ.get("RECONMIND_CLAUDE_MODEL", "claude-opus-4-8")
 
+# Claude models offered in the UI dropdown (only shown when an Anthropic key is
+# set). Order = default-first. Users can still override via RECONMIND_CLAUDE_MODEL.
+CLAUDE_CHOICES = [
+    ("claude-opus-4-8", "Claude Opus 4.8 (most capable)"),
+    ("claude-sonnet-5", "Claude Sonnet 5 (balanced)"),
+    ("claude-haiku-4-5-20251001", "Claude Haiku 4.5 (fast/cheap)"),
+]
+
+# The user's chosen model persists here so it survives restarts.
+SETTINGS_FILE = config.DATA_DIR.parent / "settings.json"
+
+
+def _load_settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def selected_model() -> str:
+    """The model the user picked in the UI, or 'auto' (let the tool decide)."""
+    return _load_settings().get("model") or "auto"
+
+
+def set_model(model: str) -> None:
+    """Persist the chosen model. Pass '' or 'auto' to return to automatic."""
+    s = _load_settings()
+    s["model"] = (model or "auto").strip()
+    try:
+        SETTINGS_FILE.write_text(json.dumps(s, indent=2))
+    except OSError:
+        pass
+
+
+def _is_claude_model(model: str) -> bool:
+    return model.startswith("claude")
+
 
 def _anthropic_key() -> str | None:
     return keys.get_field("anthropic", "key")
 
 
 def provider(prefer_local: bool = False) -> str:
-    """Which backend to use: 'claude' if a key is set (and not overridden), else 'ollama'."""
+    """Which backend to use, honoring an explicit model pick then falling back to auto."""
+    sel = selected_model()
+    if sel != "auto":
+        return "claude" if _is_claude_model(sel) else "ollama"
     if not prefer_local and _anthropic_key():
         return "claude"
     return "ollama"
@@ -176,27 +217,61 @@ def _pick_ollama(models: list[str]) -> str | None:
     return models[0] if models else None
 
 
+def _effective_claude_model() -> str:
+    """The Claude model to use: the user's pick if it's a Claude model, else default."""
+    sel = selected_model()
+    return sel if _is_claude_model(sel) else CLAUDE_MODEL
+
+
 async def status(prefer_local: bool = False) -> dict:
     """Report which backend is active and whether it's ready."""
     p = provider(prefer_local)
     if p == "claude":
         return {"provider": "claude", "available": True,
-                "model": CLAUDE_MODEL, "claude_configured": True, "error": None}
+                "model": _effective_claude_model(), "claude_configured": True,
+                "selected": selected_model(), "error": None}
     st = await _ollama_status()
     st["provider"] = "ollama"
     st["claude_configured"] = bool(_anthropic_key())
+    st["selected"] = selected_model()
+    # If the user explicitly picked an Ollama model, prefer it over the auto-pick.
+    sel = selected_model()
+    if sel != "auto" and not _is_claude_model(sel) and sel in st.get("models", []):
+        st["model"] = sel
     return st
+
+
+async def list_models() -> dict:
+    """Every model the user can pick from this machine — for the UI dropdown.
+
+    Includes an 'Automatic' option, the Claude models (only if a key is set), and
+    every locally-installed Ollama model.
+    """
+    out = [{"id": "auto", "label": "Automatic (best available)", "provider": "auto"}]
+    if _anthropic_key():
+        for mid, label in CLAUDE_CHOICES:
+            out.append({"id": mid, "label": label, "provider": "claude"})
+    st = await _ollama_status()
+    for m in st.get("models", []):
+        out.append({"id": m, "label": f"{m}  (local)", "provider": "ollama"})
+    return {
+        "models": out,
+        "current": selected_model(),
+        "ollama_available": st.get("available", False),
+        "claude_configured": bool(_anthropic_key()),
+    }
 
 
 async def _claude_generate(prompt: str, system: str) -> str:
     import anthropic
     key = _anthropic_key()
     if not key:
-        return "⚠️ No Anthropic API key set. Add one in ⚙ API keys, or the tool uses the local model."
+        return "⚠️ No Anthropic API key set. Add one in ⚙ API keys, or pick a local model."
     client = anthropic.AsyncAnthropic(api_key=key)
+    model = _effective_claude_model()
     try:
         resp = await client.messages.create(
-            model=CLAUDE_MODEL,
+            model=model,
             max_tokens=2000,
             system=system,
             messages=[{"role": "user", "content": prompt}],
@@ -205,6 +280,9 @@ async def _claude_generate(prompt: str, system: str) -> str:
         return "⚠️ Anthropic API key rejected (401). Check the key in ⚙ API keys."
     except anthropic.RateLimitError:
         return "⚠️ Anthropic rate limit hit — wait a moment and retry."
+    except anthropic.NotFoundError:
+        return (f"⚠️ Model '{model}' isn't available to your Anthropic account. "
+                "Pick another model from the dropdown.")
     except anthropic.APIStatusError as e:
         return f"⚠️ Anthropic API error {e.status_code}: {e.message}"
     except Exception as e:
@@ -220,7 +298,9 @@ async def _ollama_generate(prompt: str, system: str) -> str:
         return ("⚠️ No LLM available. Either add an Anthropic API key in ⚙ API keys "
                 "for Claude, or start the local model: `ollama serve` then "
                 "`ollama pull llama3.1`.")
-    model = st["model"]
+    # Honor an explicitly-picked local model; otherwise auto-pick a good one.
+    sel = selected_model()
+    model = sel if (sel != "auto" and not _is_claude_model(sel)) else st["model"]
     if not model:
         return "⚠️ Ollama is running but no model is installed. Run `ollama pull llama3.1`."
     payload = {"model": model, "prompt": prompt, "system": system, "stream": False,
