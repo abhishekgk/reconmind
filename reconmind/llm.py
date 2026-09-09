@@ -67,11 +67,14 @@ def _anthropic_key() -> str | None:
 
 
 def provider(prefer_local: bool = False) -> str:
-    """Which backend to use, honoring an explicit model pick then falling back to auto."""
+    """Which backend to use. The 'local' checkbox (prefer_local) always wins, so a
+    user can force the local model even when a Claude model is selected."""
+    if prefer_local:
+        return "ollama"
     sel = selected_model()
     if sel != "auto":
         return "claude" if _is_claude_model(sel) else "ollama"
-    if not prefer_local and _anthropic_key():
+    if _anthropic_key():
         return "claude"
     return "ollama"
 

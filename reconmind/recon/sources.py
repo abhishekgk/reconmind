@@ -45,17 +45,20 @@ async def _get(client: httpx.AsyncClient, url: str, timeout: float = 30,
             r = await client.get(url, timeout=timeout, headers={"User-Agent": UA}, **kw)
             if r.status_code == 200:
                 return r
+            # 429/502/503 from rate-limited sources (crt.sh especially) — back off.
         except Exception:
             pass
         if attempt < retries:
-            await asyncio.sleep(2)
+            await asyncio.sleep(3 * (attempt + 1))  # progressive: 3s, 6s, 9s…
     return None
 
 
 async def crtsh(client, domain):
-    # crt.sh is slow and flaky for large targets (multi-MB JSON) — long timeout + retry.
+    # crt.sh is the richest source but aggressively rate-limits under concurrent
+    # load (returns 502/503) — give it several progressive-backoff retries so a
+    # full scan doesn't drop it to zero. Long timeout too (multi-MB JSON).
     r = await _get(client, f"https://crt.sh/?q=%25.{domain}&output=json",
-                   timeout=75, retries=1)
+                   timeout=90, retries=4)
     if not r:
         return set()
     hosts: set[str] = set()
@@ -162,46 +165,10 @@ async def subdomain_center(client, domain):
         return set()
 
 
-async def columbus(client, domain):
-    """columbus.elmasy.com returns subdomain *labels*; we join them to the domain."""
-    r = await _get(client, f"https://columbus.elmasy.com/api/lookup/{domain}", timeout=45)
-    if not r:
-        return set()
-    try:
-        rows = r.json()
-    except (json.JSONDecodeError, ValueError):
-        return set()
-    hosts: set[str] = set()
-    for entry in rows if isinstance(rows, list) else []:
-        e = str(entry).strip().strip(".")
-        if not e or e == "*":
-            continue
-        # API returns bare labels ("www"); older/other responses may be full hosts.
-        hosts.add(e if e.endswith(domain) else f"{e}.{domain}")
-    return _clean(hosts, domain)
-
-
-async def threatminer(client, domain):
-    r = await _get(client, f"https://api.threatminer.org/v2/domain.php?q={domain}&rt=5",
-                   timeout=45)
-    if not r:
-        return set()
-    try:
-        return _clean(set(r.json().get("results", [])), domain)
-    except (json.JSONDecodeError, ValueError):
-        return set()
-
-
-async def digitorus(client, domain):
-    """certificatedetails.com (Digitorus) — subject-alt-names pulled from CT."""
-    r = await _get(client, f"https://certificatedetails.com/{domain}", timeout=45)
-    if not r:
-        return set()
-    hosts = set(re.findall(rf"[\w.\-]+\.{re.escape(domain)}", r.text))
-    return _clean(hosts, domain)
-
-
-# name -> coroutine factory
+# name -> coroutine factory. Only keyless HTTP sources that are actually reachable
+# and free live here. (Dropped: columbus [DNS gone], threatminer [origin 522],
+# digitorus [Cloudflare-blocked] — all were dead keyless. AlienVault/anubis are
+# kept but now often gate anonymous access, so they may return nothing.)
 SOURCES: dict[str, Callable[[httpx.AsyncClient, str], Awaitable[set[str]]]] = {
     "crt.sh": crtsh,
     "hackertarget": hackertarget,
@@ -212,9 +179,6 @@ SOURCES: dict[str, Callable[[httpx.AsyncClient, str], Awaitable[set[str]]]] = {
     "urlscan": urlscan,
     "wayback": wayback,
     "subdomain.center": subdomain_center,
-    "columbus": columbus,
-    "threatminer": threatminer,
-    "digitorus": digitorus,
 }
 
 

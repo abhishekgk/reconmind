@@ -10,6 +10,7 @@ extension, source). All tools degrade gracefully when not installed.
 from __future__ import annotations
 
 import asyncio
+import re
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
@@ -105,18 +106,79 @@ def _rows(urls: set[str], domain: str, source: str, cap: int) -> list[dict]:
     return rows
 
 
-async def _katana(live_urls: list[str], deadline: int) -> set[str]:
+_URL_RE = re.compile(r"https?://[^\s'\"<>)\]]+")
+
+
+def _extract_urls(lines: list[str]) -> set[str]:
+    """Pull http(s) URLs out of arbitrary tool output (gospider/hakrawler prefix
+    their lines, e.g. '[href] - https://…'), so one parser fits every crawler."""
+    out: set[str] = set()
+    for l in lines:
+        for m in _URL_RE.findall(l):
+            out.add(m.rstrip(".,);"))
+    return out
+
+
+async def _katana(live_urls: list[str], deadline: int, deep: bool) -> set[str]:
     if not config.tool_path("katana") or not live_urls:
         return set()
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
         f.write("\n".join(live_urls))
         list_file = f.name
-    cmd = ["katana", "-list", list_file, "-jc", "-d", "2", "-silent",
-           "-c", "15", "-rl", "150", "-timeout", "8",
+    depth = "4" if deep else "3"
+    conc = "25" if deep else "15"
+    rate = "250" if deep else "150"
+    # -jc parses linked JS · -kf all fetches robots.txt/sitemap.xml (harmless GETs).
+    # We deliberately do NOT auto-submit forms (-aff) — discovery stays GET-based.
+    cmd = ["katana", "-list", list_file, "-jc", "-kf", "all", "-d", depth,
+           "-silent", "-c", conc, "-rl", rate, "-timeout", "8",
            "-ef", ",".join(sorted(SKIP_EXT))]
     lines = await _run_lines(cmd, deadline)
     Path(list_file).unlink(missing_ok=True)
-    return {l for l in lines if l.startswith("http")}
+    urls = _extract_urls(lines)
+    if not urls:
+        # Older katana builds reject -kf; retry with the minimal flag set.
+        cmd = ["katana", "-list", list_file, "-jc", "-d", depth, "-silent",
+               "-c", conc, "-rl", rate, "-timeout", "8"]
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("\n".join(live_urls))
+            list_file = f.name
+        lines = await _run_lines(cmd, deadline)
+        Path(list_file).unlink(missing_ok=True)
+        urls = _extract_urls(lines)
+    return urls
+
+
+async def _gospider(live_urls: list[str], deadline: int, deep: bool) -> set[str]:
+    if not config.tool_path("gospider") or not live_urls:
+        return set()
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("\n".join(live_urls))
+        list_file = f.name
+    depth = "4" if deep else "2"
+    cmd = ["gospider", "-S", list_file, "-d", depth, "-c", "10", "-t", "20",
+           "--js", "--sitemap", "--robots", "-q", "--no-redirect"]
+    lines = await _run_lines(cmd, deadline)
+    Path(list_file).unlink(missing_ok=True)
+    return _extract_urls(lines)
+
+
+async def _hakrawler(live_urls: list[str], deadline: int, deep: bool) -> set[str]:
+    if not config.tool_path("hakrawler") or not live_urls:
+        return set()
+    depth = "3" if deep else "2"
+    # hakrawler reads seed URLs from stdin and prints discovered URLs.
+    lines = await _run_lines(["hakrawler", "-d", depth, "-subs", "-u"],
+                             deadline, input_text="\n".join(live_urls))
+    return _extract_urls(lines)
+
+
+async def _urlfinder(domain: str, deadline: int) -> set[str]:
+    """ProjectDiscovery urlfinder — passive URL discovery for the whole domain."""
+    if not config.tool_path("urlfinder"):
+        return set()
+    lines = await _run_lines(["urlfinder", "-d", domain, "-silent"], deadline)
+    return _extract_urls(lines)
 
 
 async def _historical(domain: str, deadline: int) -> set[str]:
@@ -124,17 +186,17 @@ async def _historical(domain: str, deadline: int) -> set[str]:
         if not config.tool_path("gau"):
             return set()
         lines = await _run_lines(["gau", "--subs", "--threads", "5", domain], deadline)
-        return {l for l in lines if l.startswith("http")}
+        return _extract_urls(lines)
 
     async def _wb():
         if not config.tool_path("waybackurls"):
             return set()
         lines = await _run_lines(["waybackurls", domain], deadline)
-        return {l for l in lines if l.startswith("http")}
+        return _extract_urls(lines)
 
-    # Run both archives concurrently so one slow/rate-limited tool can't double the wait.
-    gau_urls, wb_urls = await asyncio.gather(_gau(), _wb())
-    return gau_urls | wb_urls
+    gau_urls, wb_urls, uf_urls = await asyncio.gather(
+        _gau(), _wb(), _urlfinder(domain, deadline))
+    return gau_urls | wb_urls | uf_urls
 
 
 async def crawl(domain: str, live: list[dict], deep: bool = False,
@@ -144,25 +206,34 @@ async def crawl(domain: str, live: list[dict], deep: bool = False,
     `live` is the scan's live-host records; we crawl their URLs. `deep` widens the
     host cap and time budget.
     """
-    host_cap = 120 if deep else 40
-    total_cap = 20000 if deep else 8000
+    host_cap = 200 if deep else 40
+    total_cap = 40000 if deep else 8000
     live_urls = [l["url"] for l in live if l.get("url")][:host_cap]
 
-    kt_timeout = 240 if deep else 100
-    hist_timeout = 150 if deep else 75
+    kt_timeout = 360 if deep else 120
+    hist_timeout = 180 if deep else 75
 
     if on_progress:
-        on_progress("crawling live hosts + historical URLs")
+        tools_present = [t for t in ("katana", "gospider", "hakrawler", "urlfinder",
+                                     "gau", "waybackurls") if config.tool_path(t)]
+        on_progress("crawling with " + (", ".join(tools_present) or "no crawlers installed")
+                    + " (install katana/gospider/hakrawler for depth)")
 
-    katana_urls, hist_urls = await asyncio.gather(
-        _katana(live_urls, kt_timeout),
+    # Active crawlers (katana/gospider/hakrawler) + passive/historical URLs, all
+    # concurrent. Each degrades to empty if its tool isn't installed.
+    katana_urls, gospider_urls, hakrawler_urls, hist_urls = await asyncio.gather(
+        _katana(live_urls, kt_timeout, deep),
+        _gospider(live_urls, kt_timeout, deep),
+        _hakrawler(live_urls, kt_timeout, deep),
         _historical(domain, hist_timeout),
     )
 
-    # Merge with source attribution, katana taking precedence for dupes.
+    # Merge with source attribution; active crawlers take precedence over archives.
     seen: dict[str, dict] = {}
-    for row in _rows(katana_urls, domain, "katana", total_cap):
-        seen[row["url"]] = row
+    for urls, src in [(katana_urls, "katana"), (gospider_urls, "gospider"),
+                      (hakrawler_urls, "hakrawler")]:
+        for row in _rows(urls, domain, src, total_cap):
+            seen.setdefault(row["url"], row)
     for row in _rows(hist_urls, domain, "archive", total_cap):
         seen.setdefault(row["url"], row)
 

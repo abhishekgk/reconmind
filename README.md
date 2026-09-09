@@ -22,9 +22,10 @@ Give it a domain (e.g. `example.com`) and ReconMind discovers assets across
 **every dimension**, not just subdomain names:
 
 1. **Names** — subdomains from many sources at once:
-   - Keyless HTTP OSINT: crt.sh, certspotter, hackertarget, rapiddns, AlienVault
-     OTX, anubis, urlscan, Wayback Machine, subdomain.center, columbus, threatminer,
-     digitorus.
+   - Keyless HTTP OSINT: crt.sh, certspotter, hackertarget, rapiddns, urlscan,
+     Wayback Machine, subdomain.center (AlienVault OTX and anubis are queried too
+     but those providers now often gate anonymous access, so they may return
+     nothing — no key, no problem, the others cover it).
    - Tools you already have: `subfinder`, `assetfinder`, `findomain` (fast);
      `amass`, `gau`, `github-subdomains` (deep mode).
    - **Keyed sources** you enable in the UI: Shodan, VirusTotal, SecurityTrails,
@@ -42,10 +43,13 @@ Give it a domain (e.g. `example.com`) and ReconMind discovers assets across
    of discovered netblocks to find sibling hosts.
 7. **Related domains** — reverse-WHOIS (Whoxy key) and content links surface other
    root domains belonging to the target, ready to scan next.
-8. **Deep enumeration** (crawl mode) — crawls every live host with `katana`
-   (parsing linked JavaScript) plus `gau`/`waybackurls` archives, and lists the
-   discovered **URLs/endpoints** with host, parameters, extension and source —
-   filterable in its own tab.
+8. **Deep enumeration** (crawl mode) — crawls every live host with several
+   crawlers in parallel — `katana` (parses linked JS, follows robots/sitemap),
+   `gospider` and `hakrawler` — plus passive URLs from `urlfinder`, `gau` and
+   `waybackurls`, and lists the discovered **URLs/endpoints** with host,
+   parameters, extension and source, filterable in its own tab. With **deep** on,
+   the crawl goes deeper (higher depth, more hosts, longer budget). Discovery
+   stays GET-based — forms are never auto-submitted.
 
 Then the local LLM **explains** the whole surface — names, hosting, exposed
 services — flags what to study first and why, and suggests safe next steps. It's a
@@ -163,7 +167,12 @@ go install github.com/projectdiscovery/httpx/cmd/httpx@latest
 go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
 go install github.com/lc/gau/v2/cmd/gau@latest
 go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
+go install github.com/tomnomnom/waybackurls@latest
+go install github.com/projectdiscovery/urlfinder/cmd/urlfinder@latest
+# Deep crawl (the more of these you have, the deeper the Endpoints tab goes)
 go install github.com/projectdiscovery/katana/cmd/katana@latest
+go install github.com/jaeles-project/gospider@latest
+go install github.com/hakluke/hakrawler@latest
 go install github.com/sensepost/gowitness@latest        # screenshots (needs Chrome)
 ```
 
@@ -217,7 +226,7 @@ reconmind/
     permute.py         # permutation guessing + resolve
     content.py         # mine CSP/robots/sitemap/JS + TLS cert SANs
     network.py         # IP -> ASN/CIDR/org, Shodan ports, reverse-DNS sweep
-    crawl.py           # deep crawl (katana/gau/waybackurls) -> endpoints
+    crawl.py           # deep crawl (katana/gospider/hakrawler/urlfinder/gau) -> endpoints
     orchestrator.py    # the scan engine that ties it together + streams progress
   server/
     app.py             # FastAPI backend + SSE progress stream
