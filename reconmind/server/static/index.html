@@ -49,7 +49,8 @@
   .pill{background:var(--panel2);border:1px solid var(--border);border-radius:20px;
     padding:3px 10px;font-size:11px;font-family:var(--mono);color:var(--dim)}
   .pill b{color:var(--text)}
-  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:10px}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:10px;flex-wrap:wrap}
+  .tab.fuzz.active{border-bottom-color:var(--warn)}
   .tab{padding:8px 14px;cursor:pointer;color:var(--dim);border-bottom:2px solid transparent;font-size:13px}
   .tab.active{color:var(--text);border-bottom-color:var(--accent)}
   .tab b{color:var(--accent2)}
@@ -137,6 +138,41 @@
   .diffsum .chip{background:var(--panel2);border:1px solid var(--border);border-radius:16px;
     padding:3px 11px;font-size:12px}
   .diffsum .chip b{color:var(--accent)} .diffsum .chip.r b{color:var(--bad)}
+  /* fuzzer tab */
+  .fz{display:flex;flex-direction:column;gap:12px;margin-bottom:14px}
+  .fz .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .fz label.fl{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);
+    display:flex;flex-direction:column;gap:4px}
+  .fz input[type=text],.fz textarea,.fz select{background:var(--panel2);border:1px solid var(--border);
+    color:var(--text);padding:9px 11px;border-radius:8px;font-size:13px;font-family:var(--mono)}
+  .fz input:focus,.fz select:focus,.fz textarea:focus{outline:none;border-color:var(--accent2)}
+  .fz textarea{width:100%;min-height:52px;resize:vertical}
+  .fz #fzUrl{flex:1;min-width:260px;font-size:14px}
+  .fz select.method{max-width:110px;color:var(--warn);font-weight:700}
+  .fz .hdr{display:flex;gap:8px;align-items:center}
+  .fz .hdr input{flex:1;min-width:120px}
+  .fz .hdr .hk{max-width:220px}
+  .fz .small{font-size:11px;color:var(--dim)}
+  .fz .opts{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;
+    background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+  .fz .opts input[type=text]{width:90px}
+  .fz .opts input.wide{width:150px}
+  .fz .grp{border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:var(--panel)}
+  .fz .grp h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim)}
+  .iconbtn{background:var(--panel2);color:var(--text);border:1px solid var(--border);
+    border-radius:8px;padding:8px 11px;font-size:13px;cursor:pointer}
+  .iconbtn:hover{border-color:var(--accent2)}
+  .iconbtn.rm{color:var(--bad);padding:8px 10px}
+  button.warn{background:var(--warn);color:#241a00}
+  .fzcount{font-size:12px;color:var(--dim);margin:6px 0}
+  .sev{font-family:var(--mono);font-size:10px;font-weight:700;border-radius:4px;padding:1px 6px;color:#000}
+  .sev.high{background:var(--bad);color:#fff} .sev.medium{background:var(--warn)}
+  .sev.low{background:#2ea04355;color:var(--accent)} .sev.info{background:var(--panel2);color:var(--dim);border:1px solid var(--border)}
+  .expbox{border:1px solid #d2992244;background:#241f11;border-radius:10px;padding:10px 12px;margin-bottom:12px}
+  .expbox h4{margin:0 0 8px;font-size:12px;color:var(--warn);text-transform:uppercase;letter-spacing:.5px}
+  .exprow{display:flex;gap:10px;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid #ffffff10}
+  .exprow a{font-family:var(--mono);word-break:break-all}
+  .exprow .ev{color:var(--dim);font-family:var(--mono);font-size:11px}
 </style>
 </head>
 <body>
@@ -188,6 +224,7 @@
       <div class="tab" data-tab="endpoints">Endpoints <b id="tEndpoints">0</b></div>
       <div class="tab" data-tab="takeovers">Takeovers <b id="tTakeovers">0</b></div>
       <div class="tab" data-tab="related">Related domains <b id="tRelated">0</b></div>
+      <div class="tab fuzz" data-tab="fuzzer" title="manual content fuzzing — pick a tool + wordlist, set method &amp; headers">🎯 Fuzzer</div>
     </div>
 
     <div class="filterbar" id="filterbar">
@@ -276,6 +313,23 @@
     <h2>Scan history</h2>
     <p class="muted">Every scan is auto-saved to <code>~/.reconmind/data</code>.
       Load one back into the dashboard to view it or ask the LLM about it.</p>
+    <div class="filterbar" style="margin-bottom:10px">
+      <label class="chk" style="gap:4px">when
+        <select id="histRange" class="modelsel">
+          <option value="all">All time</option>
+          <option value="today">Today</option>
+          <option value="7d">Last 7 days</option>
+          <option value="30d">Last 30 days</option>
+          <option value="older">Older than 30 days</option>
+        </select></label>
+      <label class="chk" style="gap:4px">sort
+        <select id="histOrder" class="modelsel">
+          <option value="new">Newest first</option>
+          <option value="old">Oldest first</option>
+        </select></label>
+      <input id="histSearch" type="text" placeholder="filter by domain…" style="min-width:140px;flex:0 1 200px">
+      <span class="muted" id="histShowing" style="margin-left:auto"></span>
+    </div>
     <div id="historyList"></div>
     <div class="modalbtns">
       <button class="ghost" id="historyClose">Close</button>
@@ -283,6 +337,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=9"></script>
+<script src="/static/app.js?v=12"></script>
 </body>
 </html>

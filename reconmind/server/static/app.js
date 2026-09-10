@@ -11,7 +11,7 @@ const SORT = {
   subs:{k:"live",d:-1}, ips:{k:"ip",d:1}, asns:{k:"asn",d:1},
   endpoints:{k:"host",d:1}, takeovers:{k:"confidence",d:1}, related:{k:"domain",d:1},
 };
-const facet = { status:new Set(), shot:false, takeover:false, newOnly:false, hideRev:false };
+const facet = { status:new Set(), epStatus:new Set(), shot:false, takeover:false, newOnly:false, hideRev:false };
 
 const INTERESTING = /(^|[.\-])(dev|test|stage|staging|uat|qa|sandbox|internal|intranet|corp|admin|api|graphql|gateway|auth|sso|login|jenkins|gitlab|git|jira|grafana|kibana|vpn|legacy|old|beta|backup|s3|storage|preprod|demo)([.\-]|$)/i;
 
@@ -113,17 +113,54 @@ function importFileChosen(ev){
   };
   reader.readAsText(file); ev.target.value="";
 }
+let HIST_SCANS = [];
 async function openHistory(){
-  const data=await (await fetch("/api/scans")).json();
-  const scans=data.scans||[];
-  $("historyList").innerHTML = scans.length ? scans.map(s=>{
-    const c=s.counts||{}, when=s.finished?new Date(s.finished*1000).toLocaleString():"";
+  try{ HIST_SCANS = (await (await fetch("/api/scans")).json()).scans||[]; }
+  catch(e){ HIST_SCANS=[]; }
+  renderHistoryList();
+  $("historyOverlay").classList.add("show");
+}
+function histInRange(s, range){
+  if(range==="all") return true;
+  const now=Date.now()/1000, day=86400;
+  if(!s.finished) return range==="older";          // undated scans count as "old"
+  const age=now-s.finished;
+  if(range==="today"){ const d=new Date(); d.setHours(0,0,0,0); return s.finished>=d.getTime()/1000; }
+  if(range==="7d")   return age<=7*day;
+  if(range==="30d")  return age<=30*day;
+  if(range==="older") return age>30*day;
+  return true;
+}
+function renderHistoryList(){
+  const range=$("histRange")?$("histRange").value:"all";
+  const order=$("histOrder")?$("histOrder").value:"new";
+  const q=($("histSearch")?$("histSearch").value:"").trim().toLowerCase();
+  let scans=HIST_SCANS.filter(s=>histInRange(s,range));
+  if(q) scans=scans.filter(s=>(s.domain||"").toLowerCase().includes(q));
+  scans=scans.slice().sort((a,b)=>{ const av=a.finished||0, bv=b.finished||0; return order==="old"?av-bv:bv-av; });
+  $("histShowing").textContent=`${scans.length} of ${HIST_SCANS.length} scans`;
+  $("historyList").innerHTML = HIST_SCANS.length ? (scans.length ? scans.map(s=>{
+    const c=s.counts||{}, when=s.finished?new Date(s.finished*1000).toLocaleString():"undated";
     return `<div class="histrow"><div><div class="hd">${esc(s.domain||"?")}</div>
-      <div class="hc">${when} · ${c.total||0} subs · ${c.live||0} live · ${c.ips||0} IPs · ${c.takeovers||0} takeovers</div></div>
-      <button class="ghost sm" data-load="${esc(s.file)}">Load</button></div>`; }).join("")
+      <div class="hc">${esc(when)} · ${c.total||0} subs · ${c.live||0} live · ${c.ips||0} IPs · ${c.endpoints||0} endpoints · ${c.takeovers||0} takeovers</div></div>
+      <div style="display:flex;gap:8px">
+        <button class="ghost sm" data-load="${esc(s.file)}">Load</button>
+        <button class="ghost sm" data-del="${esc(s.file)}" title="delete this saved scan" style="color:var(--bad)">🗑</button>
+      </div></div>`; }).join("")
+    : `<p class="muted">No scans match this filter.</p>`)
     : `<p class="muted">No saved scans yet.</p>`;
   document.querySelectorAll("[data-load]").forEach(b=>b.onclick=()=>loadHistory(b.dataset.load));
-  $("historyOverlay").classList.add("show");
+  document.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>deleteScan(b.dataset.del));
+}
+async function deleteScan(file){
+  const s=HIST_SCANS.find(x=>x.file===file);
+  if(!confirm(`Delete this saved scan?\n\n${(s&&s.domain)||file}\n${s&&s.finished?new Date(s.finished*1000).toLocaleString():""}\n\nThis removes the JSON file from ~/.reconmind/data and can't be undone.`)) return;
+  try{
+    const r=await fetch(`/api/scans/${encodeURIComponent(file)}`,{method:"DELETE"});
+    if(!r.ok){ alert("Could not delete that scan."); return; }
+    HIST_SCANS=HIST_SCANS.filter(x=>x.file!==file);
+    renderHistoryList();
+  }catch(e){ alert("Could not delete that scan."); }
 }
 async function loadHistory(file){
   const r=await fetch(`/api/scans/${encodeURIComponent(file)}/load`,{method:"POST"});
@@ -203,7 +240,11 @@ async function computeDiff(data){
 
 // ---------- tabs + generic table ----------
 function render(){
-  if(!scanData) return;
+  const fuzzing = activeTab==="fuzzer";
+  $("filterbar").style.display = fuzzing ? "none" : "";
+  $("facets").style.display    = fuzzing ? "none" : "";
+  if(fuzzing){ renderFuzzer(); return; }
+  if(!scanData){ $("panel").innerHTML=""; return; }
   $("liveWrap").style.display   = activeTab==="subs" ? "flex" : "none";
   $("paramsWrap").style.display = activeTab==="endpoints" ? "flex" : "none";
   renderFacets();
@@ -233,21 +274,30 @@ function renderTable(tab, cols, rows, total, cap){
 }
 
 // ---------- facets (subdomains tab) ----------
+function epBucket(s){ return s==null?"none":Math.floor(s/100)+"xx"; }
 function renderFacets(){
   const f=$("facets");
-  if(activeTab!=="subs"){ f.innerHTML=""; return; }
   const chip=(id,label,on)=>`<span class="facet ${on?'on':''}" data-facet="${id}">${label}</span>`;
-  f.innerHTML = ["2xx","3xx","4xx","5xx"].map(s=>chip("s"+s,s,facet.status.has(s))).join("")
-    + chip("shot","📷 has shot",facet.shot) + chip("takeover","⚠ takeover",facet.takeover)
-    + chip("new","🆕 new",facet.newOnly) + chip("hiderev","hide reviewed",facet.hideRev);
+  if(activeTab==="subs"){
+    f.innerHTML = ["2xx","3xx","4xx","5xx"].map(s=>chip("status:"+s,s,facet.status.has(s))).join("")
+      + chip("shot","📷 has shot",facet.shot) + chip("takeover","⚠ takeover",facet.takeover)
+      + chip("new","🆕 new",facet.newOnly) + chip("hiderev","hide reviewed",facet.hideRev);
+  } else if(activeTab==="endpoints"){
+    const all=scanData.endpoints||[];
+    if(!all.length){ f.innerHTML=""; return; }
+    const n=(b)=>all.filter(r=>epBucket(r.status)===b).length;
+    f.innerHTML = ["2xx","3xx","4xx","5xx"].map(s=>chip("ep:"+s,`${s} <b>${n(s)}</b>`,facet.epStatus.has(s))).join("")
+      + chip("ep:none",`∅ unknown <b>${n("none")}</b>`,facet.epStatus.has("none"));
+  } else { f.innerHTML=""; return; }
   f.querySelectorAll("[data-facet]").forEach(el=>el.onclick=()=>{
     const id=el.dataset.facet;
-    if(id.startsWith("s")&&id.length===4){ const s=id.slice(1); facet.status.has(s)?facet.status.delete(s):facet.status.add(s); }
+    if(id.startsWith("status:")){ const s=id.slice(7); facet.status.has(s)?facet.status.delete(s):facet.status.add(s); }
+    else if(id.startsWith("ep:")){ const s=id.slice(3); facet.epStatus.has(s)?facet.epStatus.delete(s):facet.epStatus.add(s); }
     else if(id==="shot") facet.shot=!facet.shot;
     else if(id==="takeover") facet.takeover=!facet.takeover;
     else if(id==="new") facet.newOnly=!facet.newOnly;
     else if(id==="hiderev") facet.hideRev=!facet.hideRev;
-    renderSubs(); renderFacets();
+    render();
   });
 }
 function statusBucket(s){ if(s==null)return null; return Math.floor(s/100)+"xx"; }
@@ -315,8 +365,10 @@ function renderEndpoints(){
   const all=scanData.endpoints||[];
   if(!all.length){ $("showing").textContent=""; $("panel").innerHTML=`<p class="muted">No endpoints. Tick <b>crawl</b> or click <b>⛏ Crawl</b> on a loaded scan (needs katana/gau).</p>`; return; }
   let rows=all.slice(); if($("onlyParams").checked) rows=rows.filter(r=>r.params);
+  if(facet.epStatus.size) rows=rows.filter(r=>facet.epStatus.has(epBucket(r.status)));
   const f=filterText(); if(f) rows=rows.filter(r=>r.url.toLowerCase().includes(f)||(r.host||"").includes(f)||(r.ext||"").includes(f));
   const cols=[
+    {key:"status",label:"Status",val:r=>r.status||0,cell:r=>`<td>${r.status?`<span class="st ${statusClass(r.status)}">${r.status}</span>`:'<span class="muted" title="not probed">?</span>'}</td>`},
     {key:"url",label:"URL",val:r=>r.url||"",cell:r=>`<td class="mono"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url.length>110?r.url.slice(0,110)+'…':r.url)}</a></td>`},
     {key:"host",label:"Host",val:r=>r.host||"",cell:r=>`<td class="mono muted">${esc(r.host)}</td>`},
     {key:"params",label:"Params",val:r=>r.params?1:0,cell:r=>`<td>${r.params?'<span class="yes">✓</span>':'<span class="no">–</span>'}</td>`},
@@ -485,6 +537,200 @@ function exportDiff(){
   dl(`${scanData.domain}_diff.md`, md, "text/markdown");
 }
 
+// ========================================================================
+// Fuzzer tab — Postman-style manual content discovery
+// ========================================================================
+let FUZZ = {
+  method:"GET", url:"", tool:"", wordlist:"", extensions:"", match_codes:"",
+  filter_codes:"404", threads:40, rps:0, recursion:0, quick_wins:false, data:"",
+  headers:[{name:"",value:""}], rows:[], exposures:[], running:false,
+  jobId:null, es:null, filter:"", statusFacet:new Set(),
+};
+let FUZZ_META = { wordlists:null, tools:null };
+const FZ_INTERESTING = /(admin|backup|\.bak|\.old|\.sql|\.zip|\.tar|\.git|\.env|config|secret|token|api|graphql|upload|debug|test|internal|private|swagger|actuator|\.json|\.xml|password|\.log)/i;
+
+function fzHuman(n){ if(n==null) return ""; if(n<1024) return n+"B"; if(n<1048576) return (n/1024).toFixed(1)+"KB"; return (n/1048576).toFixed(1)+"MB"; }
+
+async function loadFuzzMeta(){
+  try{
+    if(!FUZZ_META.tools){ FUZZ_META.tools = (await (await fetch("/api/fuzz/tools")).json()); if(!FUZZ.tool) FUZZ.tool = FUZZ_META.tools.default||"ffuf"; }
+    if(!FUZZ_META.wordlists){ FUZZ_META.wordlists = (await (await fetch("/api/wordlists")).json()).wordlists||[]; }
+  }catch(e){ FUZZ_META.tools=FUZZ_META.tools||{tools:[]}; FUZZ_META.wordlists=FUZZ_META.wordlists||[]; }
+  populateFuzzSelects();
+}
+function populateFuzzSelects(){
+  const tsel=$("fzTool"); if(tsel && FUZZ_META.tools){
+    tsel.innerHTML=(FUZZ_META.tools.tools||[]).map(t=>`<option value="${esc(t.name)}" ${t.available?"":"disabled"}>${esc(t.name)}${t.available?"":" — not installed"}</option>`).join("");
+    if(FUZZ.tool) tsel.value=FUZZ.tool; if(tsel.selectedIndex<0||tsel.value!==FUZZ.tool){ const first=(FUZZ_META.tools.tools||[]).find(t=>t.available); if(first){ tsel.value=first.name; FUZZ.tool=first.name; } }
+  }
+  const wsel=$("fzWordlist"); if(wsel && FUZZ_META.wordlists){
+    const groups={}; FUZZ_META.wordlists.forEach(w=>{ (groups[w.group]=groups[w.group]||[]).push(w); });
+    wsel.innerHTML=`<option value="">— choose a wordlist —</option>`+Object.entries(groups).map(([g,ws])=>
+      `<optgroup label="${esc(g)}">`+ws.map(w=>`<option value="${esc(w.path)}">${esc(w.name)} · ${w.lines>=0?w.lines.toLocaleString()+" lines":w.human}</option>`).join("")+`</optgroup>`).join("");
+    if(FUZZ.wordlist) wsel.value=FUZZ.wordlist;
+  }
+  updateToolHints();
+}
+function toolMeta(name){ return ((FUZZ_META.tools||{}).tools||[]).find(t=>t.name===name)||{}; }
+function updateToolHints(){
+  const m=toolMeta(FUZZ.tool); const h=$("fzToolHint"); if(h) h.textContent=m.purpose||"";
+  const rec=$("fzRecursion"); if(rec){ rec.disabled=!m.supports_recursion; rec.title=m.supports_recursion?"recursion depth (0 = off)":`${FUZZ.tool} doesn't support recursion`; }
+}
+
+function fuzzFormHTML(){
+  const liveHosts=(scanData&&scanData.hosts?scanData.hosts.filter(h=>h.live&&h.url):[]);
+  const fromScan = liveHosts.length ? `<label class="fl" style="max-width:260px">from scan
+      <select id="fzFromScan"><option value="">— live hosts (${liveHosts.length}) —</option>${liveHosts.map(h=>`<option value="${esc(h.url)}">${esc(h.host)}</option>`).join("")}</select></label>` : "";
+  return `<div class="fz" id="fzForm">
+    <div class="row">
+      <label class="fl">method
+        <select id="fzMethod" class="method">${["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"].map(m=>`<option ${FUZZ.method===m?"selected":""}>${m}</option>`).join("")}</select></label>
+      <label class="fl" style="flex:1">target URL <span class="small">(mark the inject point with <code>FUZZ</code> — auto-appended if omitted)</span>
+        <input type="text" id="fzUrl" placeholder="https://target.com/FUZZ" value="${esc(FUZZ.url)}"></label>
+      ${fromScan}
+      <button id="fzStart" class="warn" style="align-self:flex-end">▶ Start</button>
+      <button id="fzStop" class="ghost" style="align-self:flex-end" ${FUZZ.running?"":"disabled"}>■ Stop</button>
+    </div>
+    <div class="row" style="align-items:flex-end">
+      <label class="fl" style="flex:1;min-width:240px">wordlist <span class="small">(from /opt, SecLists, ~/.reconmind)</span>
+        <select id="fzWordlist"></select></label>
+      <label class="fl" style="max-width:200px">tool
+        <select id="fzTool"></select></label>
+      <span class="small" id="fzToolHint" style="max-width:240px"></span>
+    </div>
+    <div class="grp">
+      <h4>Headers <span class="small">(sent with every request)</span></h4>
+      <div id="fzHeaders"></div>
+      <button class="iconbtn" id="fzAddHeader" style="margin-top:8px">＋ Add header</button>
+    </div>
+    <div id="fzBodyWrap" class="grp" ${["POST","PUT","PATCH","DELETE"].includes(FUZZ.method)?"":'hidden'}>
+      <h4>Request body</h4>
+      <textarea id="fzData" placeholder='e.g. {"q":"FUZZ"} or a=1&b=FUZZ'>${esc(FUZZ.data)}</textarea>
+    </div>
+    <div class="opts">
+      <label class="fl">extensions<input type="text" class="wide" id="fzExt" placeholder="php,txt,bak" value="${esc(FUZZ.extensions)}"></label>
+      <label class="fl">match codes<input type="text" id="fzMatch" placeholder="all" value="${esc(FUZZ.match_codes)}" title="status codes to keep (ffuf -mc). blank = all"></label>
+      <label class="fl">filter codes<input type="text" id="fzFilter" placeholder="404" value="${esc(FUZZ.filter_codes)}" title="status codes to drop (ffuf -fc)"></label>
+      <label class="fl">threads<input type="text" id="fzThreads" value="${esc(String(FUZZ.threads))}"></label>
+      <label class="fl">rate/s<input type="text" id="fzRps" value="${esc(String(FUZZ.rps))}" title="requests/sec, 0 = unlimited"></label>
+      <label class="fl">recursion<input type="text" id="fzRecursion" value="${esc(String(FUZZ.recursion))}" title="recursion depth (0 = off)"></label>
+      <label class="chk" style="align-self:flex-end" title="also probe .git/.env/swagger/actuator/backups on this host (validated, no false positives)"><input type="checkbox" id="fzQuick" ${FUZZ.quick_wins?"checked":""}> quick-win files</label>
+    </div>
+    <div class="phase" id="fzPhase"></div>
+  </div>
+  <div id="fzOut"></div>`;
+}
+function renderHeaderRows(){
+  const c=$("fzHeaders"); if(!c) return;
+  if(!FUZZ.headers.length) FUZZ.headers=[{name:"",value:""}];
+  c.innerHTML=FUZZ.headers.map((h,i)=>`<div class="hdr" style="margin:6px 0">
+    <input type="text" class="hk" data-hi="${i}" data-hf="name" placeholder="Header-Name" value="${esc(h.name)}">
+    <input type="text" data-hi="${i}" data-hf="value" placeholder="value" value="${esc(h.value)}">
+    <button class="iconbtn rm" data-hrm="${i}" title="remove">✕</button></div>`).join("");
+  c.querySelectorAll("[data-hrm]").forEach(b=>b.onclick=()=>{ readHeaderRows(); FUZZ.headers.splice(+b.dataset.hrm,1); renderHeaderRows(); });
+}
+function readHeaderRows(){
+  const rows=[]; document.querySelectorAll("#fzHeaders .hdr").forEach(r=>{
+    const n=r.querySelector('[data-hf="name"]').value, v=r.querySelector('[data-hf="value"]').value; rows.push({name:n,value:v}); });
+  if(rows.length) FUZZ.headers=rows; return FUZZ.headers;
+}
+function syncFuzzState(){
+  const g=(id)=>$(id)?$(id).value:"";
+  FUZZ.method=g("fzMethod")||"GET"; FUZZ.url=g("fzUrl"); FUZZ.tool=g("fzTool")||FUZZ.tool;
+  FUZZ.wordlist=g("fzWordlist"); FUZZ.extensions=g("fzExt"); FUZZ.match_codes=g("fzMatch");
+  FUZZ.filter_codes=g("fzFilter"); FUZZ.threads=parseInt(g("fzThreads"))||40; FUZZ.rps=parseInt(g("fzRps"))||0;
+  FUZZ.recursion=parseInt(g("fzRecursion"))||0; FUZZ.data=g("fzData"); FUZZ.quick_wins=$("fzQuick")?$("fzQuick").checked:false;
+  readHeaderRows();
+}
+function buildFuzzForm(){
+  $("panel").innerHTML=fuzzFormHTML();
+  renderHeaderRows();
+  $("fzAddHeader").onclick=()=>{ readHeaderRows(); FUZZ.headers.push({name:"",value:""}); renderHeaderRows(); };
+  $("fzStart").onclick=startFuzz; $("fzStop").onclick=stopFuzz;
+  $("fzMethod").onchange=()=>{ FUZZ.method=$("fzMethod").value; $("fzBodyWrap").hidden=!["POST","PUT","PATCH","DELETE"].includes(FUZZ.method); };
+  $("fzTool").onchange=()=>{ FUZZ.tool=$("fzTool").value; updateToolHints(); };
+  const fs=$("fzFromScan"); if(fs) fs.onchange=()=>{ if(fs.value){ $("fzUrl").value=fs.value; FUZZ.url=fs.value; } };
+  loadFuzzMeta();
+}
+function renderFuzzer(){
+  if(!$("fzForm")) buildFuzzForm();
+  renderFuzzResults();
+}
+let fzRenderPending=false;
+function scheduleFuzzRender(){ if(fzRenderPending) return; fzRenderPending=true; setTimeout(()=>{ fzRenderPending=false; if(activeTab==="fuzzer") renderFuzzResults(); },350); }
+
+function startFuzz(){
+  syncFuzzState();
+  if(!FUZZ.url.trim()){ alert("Enter a URL to fuzz, e.g. https://target.com/FUZZ"); return; }
+  if(!FUZZ.wordlist){ alert("Pick a wordlist from the dropdown."); return; }
+  const m=toolMeta(FUZZ.tool); if(m && m.available===false){ alert(FUZZ.tool+" is not installed."); return; }
+  FUZZ.rows=[]; FUZZ.exposures=[]; FUZZ.running=true;
+  if(FUZZ.es){ try{FUZZ.es.close();}catch(e){} }
+  updateFuzzButtons(); renderFuzzResults();
+  const body={ url:FUZZ.url, tool:FUZZ.tool, wordlist:FUZZ.wordlist, method:FUZZ.method,
+    headers:FUZZ.headers.filter(h=>h.name.trim()), extensions:FUZZ.extensions,
+    match_codes:FUZZ.match_codes, filter_codes:FUZZ.filter_codes, threads:FUZZ.threads,
+    rps:FUZZ.rps, recursion:FUZZ.recursion, data:FUZZ.data, quick_wins:FUZZ.quick_wins };
+  $("fzPhase").textContent="▸ starting…";
+  fetch("/api/fuzz",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
+    .then(r=>r.json()).then(res=>{
+      if(!res.job_id){ $("fzPhase").textContent="⚠ "+(res.detail||"failed to start"); FUZZ.running=false; updateFuzzButtons(); return; }
+      FUZZ.jobId=res.job_id;
+      const es=new EventSource(`/api/fuzz/${res.job_id}/events`); FUZZ.es=es;
+      es.onmessage=(e)=>{ const ev=JSON.parse(e.data);
+        if(ev.kind==="phase") $("fzPhase").textContent="▸ "+ev.phase;
+        else if(ev.kind==="result"){ FUZZ.rows.push(ev.row); scheduleFuzzRender(); }
+        else if(ev.kind==="exposure"){ FUZZ.exposures.push(ev.row); scheduleFuzzRender(); }
+        else if(ev.kind==="done"){ es.close(); FUZZ.running=false; updateFuzzButtons();
+          $("fzPhase").textContent=`✓ done — ${FUZZ.rows.length} result${FUZZ.rows.length===1?"":"s"}${ev.exposures?`, ${ev.exposures} exposure${ev.exposures===1?"":"s"}`:""}${ev.truncated?" (capped at 5000)":""}`; renderFuzzResults(); }
+        else if(ev.kind==="error"){ es.close(); FUZZ.running=false; updateFuzzButtons(); $("fzPhase").textContent="⚠ "+(ev.message||"error"); renderFuzzResults(); }
+      };
+      es.onerror=()=>{ es.close(); FUZZ.running=false; updateFuzzButtons(); if(!$("fzPhase").textContent.startsWith("✓")) $("fzPhase").textContent="▸ stream ended"; };
+    }).catch(()=>{ $("fzPhase").textContent="⚠ failed to start"; FUZZ.running=false; updateFuzzButtons(); });
+}
+function stopFuzz(){ if(FUZZ.es){ try{FUZZ.es.close();}catch(e){} } FUZZ.running=false; updateFuzzButtons(); $("fzPhase").textContent="■ stopped listening (server finishes the run under its time budget)"; }
+function updateFuzzButtons(){ const s=$("fzStart"),t=$("fzStop"); if(s){ s.disabled=FUZZ.running; s.textContent=FUZZ.running?"running…":"▶ Start"; } if(t) t.disabled=!FUZZ.running; }
+
+function renderFuzzResults(){
+  const out=$("fzOut"); if(!out) return;
+  let html="";
+  if(FUZZ.exposures.length){
+    html+=`<div class="expbox"><h4>⚠ Exposed files (${FUZZ.exposures.length}) — validated, likely reportable</h4>`+
+      FUZZ.exposures.map(e=>`<div class="exprow"><span class="sev ${esc(e.severity)}">${esc(e.severity)}</span>
+        <a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.path)}</a>
+        <span class="st ${statusClass(e.status)}">${e.status}</span>
+        <span>${esc(e.type)}</span><span class="ev">${esc(e.evidence||"")}</span></div>`).join("")+`</div>`;
+  }
+  const total=FUZZ.rows.length;
+  let rows=FUZZ.rows.slice();
+  if(FUZZ.statusFacet.size) rows=rows.filter(r=>FUZZ.statusFacet.has(statusBucket(r.status)));
+  const f=(FUZZ.filter||"").toLowerCase(); if(f) rows=rows.filter(r=>(r.url||"").toLowerCase().includes(f)||(r.path||"").toLowerCase().includes(f));
+  const buckets=["2xx","3xx","4xx","5xx"];
+  const facetChips=buckets.map(b=>`<span class="facet ${FUZZ.statusFacet.has(b)?'on':''}" data-fzs="${b}">${b} <b>${FUZZ.rows.filter(r=>statusBucket(r.status)===b).length}</b></span>`).join("");
+  html+=`<div class="filterbar" style="margin-top:4px">
+      <input id="fzResFilter" type="text" placeholder="filter results…" style="min-width:160px;flex:0 1 260px" value="${esc(FUZZ.filter||"")}">
+      <span class="muted">${rows.length} / ${total} shown${FUZZ.running?' · <span style="color:var(--warn)">live…</span>':''}</span>
+      <div style="margin-left:auto"><button class="ghost sm" id="fzExport" ${total?"":"disabled"}>⬇ Export URLs</button></div>
+    </div>
+    <div class="facets">${facetChips}</div>`;
+  if(!total){
+    html+=`<p class="muted">${FUZZ.running?"Fuzzing… results will stream in here.":"No results yet. Pick a wordlist + tool above and hit <b>Start</b>. Tip: put <code>FUZZ</code> in the URL to control exactly where the wordlist is injected (e.g. <code>https://host/api/FUZZ</code> or <code>https://host/?id=FUZZ</code>)."}</p>`;
+  } else {
+    const sorted=rows.sort((a,b)=>(a.status||0)-(b.status||0)||(a.path||"").localeCompare(b.path||"")).slice(0,3000);
+    html+=`<table><thead><tr><th>Status</th><th>Size</th><th>Words</th><th>Path / URL</th><th>Source</th></tr></thead><tbody>`+
+      sorted.map(r=>{ const inter=FZ_INTERESTING.test(r.path||r.url);
+        return `<tr><td><span class="st ${statusClass(r.status)}">${r.status==null?"?":r.status}</span></td>
+        <td class="mono muted">${fzHuman(r.size)}</td><td class="mono muted">${r.words==null?"":r.words}</td>
+        <td class="mono">${inter?'<span class="interesting" title="commonly interesting">★ </span>':''}<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc((r.path||r.url).length>110?(r.path||r.url).slice(0,110)+'…':(r.path||r.url))}</a>${r.redirect?` <span class="muted">→ ${esc(r.redirect.length>50?r.redirect.slice(0,50)+'…':r.redirect)}</span>`:''}</td>
+        <td><span class="tag">${esc(r.source)}</span></td></tr>`; }).join("")+`</tbody></table>`;
+    if(sorted.length<rows.length) html+=`<p class="muted">Showing first ${sorted.length} of ${rows.length} — refine the filter.</p>`;
+  }
+  out.innerHTML=html;
+  const rf=$("fzResFilter"); if(rf) rf.oninput=()=>{ FUZZ.filter=rf.value; renderFuzzResults(); const nf=$("fzResFilter"); if(nf){ nf.focus(); nf.setSelectionRange(nf.value.length,nf.value.length);} };
+  out.querySelectorAll("[data-fzs]").forEach(el=>el.onclick=()=>{ const b=el.dataset.fzs; FUZZ.statusFacet.has(b)?FUZZ.statusFacet.delete(b):FUZZ.statusFacet.add(b); renderFuzzResults(); });
+  const ex=$("fzExport"); if(ex) ex.onclick=()=>dl(`fuzz_${(scanData&&scanData.domain)||"results"}.txt`, FUZZ.rows.map(r=>r.url).join("\n"));
+}
+
 // ---------- wire up ----------
 $("scanBtn").onclick=startScan;
 $("domain").addEventListener("keydown",e=>{if(e.key==="Enter")startScan();});
@@ -499,6 +745,7 @@ $("keysBtn").onclick=openKeys; $("keysClose").onclick=()=>$("keysOverlay").class
 $("keysOverlay").onclick=(e)=>{ if(e.target===$("keysOverlay")) $("keysOverlay").classList.remove("show"); };
 $("importBtn").onclick=()=>$("importFile").click(); $("importFile").onchange=importFileChosen;
 $("historyBtn").onclick=openHistory; $("historyClose").onclick=()=>$("historyOverlay").classList.remove("show");
+$("histRange").onchange=renderHistoryList; $("histOrder").onchange=renderHistoryList; $("histSearch").oninput=renderHistoryList;
 $("historyOverlay").onclick=(e)=>{ if(e.target===$("historyOverlay")) $("historyOverlay").classList.remove("show"); };
 $("lightbox").onclick=()=>$("lightbox").classList.remove("show");
 $("modelSelect").onchange=onModelChange;
@@ -507,5 +754,7 @@ $("diffSelect").onchange=(e)=>runDiff(e.target.value);
 $("diffExport").onclick=exportDiff;
 $("diffClose").onclick=()=>$("diffOverlay").classList.remove("show");
 $("diffOverlay").onclick=(e)=>{ if(e.target===$("diffOverlay")) $("diffOverlay").classList.remove("show"); };
-document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); t.classList.add("active"); activeTab=t.dataset.tab; render(); });
+document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); t.classList.add("active"); activeTab=t.dataset.tab; try{history.replaceState(null,"","#"+activeTab);}catch(e){} render(); });
+// Deep-link / bookmark a tab via the URL hash (e.g. …/#fuzzer opens the Fuzzer).
+(function initTabFromHash(){ const h=(location.hash||"").slice(1); const el=h&&document.querySelector('.tab[data-tab="'+h+'"]'); if(el){ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); el.classList.add("active"); activeTab=h; render(); } })();
 loadTools(); loadLlm(); loadModels(); setInterval(loadLlm,15000);

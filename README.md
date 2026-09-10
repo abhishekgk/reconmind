@@ -174,7 +174,23 @@ go install github.com/projectdiscovery/katana/cmd/katana@latest
 go install github.com/jaeles-project/gospider@latest
 go install github.com/hakluke/hakrawler@latest
 go install github.com/sensepost/gowitness@latest        # screenshots (needs Chrome)
+# Fuzzer tab (content discovery) — pick your engine in the tool dropdown
+go install github.com/ffuf/ffuf/v2@latest
+go install github.com/OJ/gobuster/v3@latest
 ```
+
+Extra fuzzers (optional; ffuf + gobuster already cover most needs): `feroxbuster`
+(`brew install feroxbuster` / `cargo install feroxbuster` / `scoop install feroxbuster`),
+`dirb` (`brew install dirb` / `apt install dirb`), `wfuzz` (`pip install wfuzz`).
+
+### Wordlists for the Fuzzer
+
+The Fuzzer's **wordlist dropdown** auto-discovers `*.txt` lists from `~/.reconmind/wordlists`,
+`/opt`, `/opt/SecLists/...`, `/usr/share/wordlists`, `~/wordlists`, and any dirs in
+`RECONMIND_WORDLIST_DIRS`. The installer offers to download a curated set (raft, common,
+big, api, subdomains) into `~/.reconmind/wordlists` — and optionally the full
+[SecLists](https://github.com/danielmiessler/SecLists). Drop your own `.txt` lists in any
+of those folders and they appear in the dropdown immediately (no restart).
 
 | Tool | macOS | Linux | Windows |
 |------|-------|-------|---------|

@@ -51,3 +51,18 @@ def load(filename: str) -> dict | None:
         return json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
+
+
+def delete(filename: str) -> bool:
+    """Delete one saved scan file. Returns True on success. Same path-traversal
+    guard as load() — only plain filenames inside the data dir are allowed."""
+    if "/" in filename or ".." in filename:
+        return False
+    path = config.DATA_DIR / filename
+    if not path.is_file():
+        return False
+    try:
+        path.unlink()
+        return True
+    except OSError:
+        return False

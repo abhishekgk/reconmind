@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import config, keys, llm, report, store, tools
+from ..recon import fuzzer
 from ..recon.crawl import crawl as run_crawl
 from ..recon.orchestrator import Scan, run_scan
 
@@ -102,9 +103,31 @@ class CrawlRequest(BaseModel):
     deep: bool = False
 
 
+class FuzzRequest(BaseModel):
+    """A single Postman-style content-fuzzing job (the Fuzzer tab)."""
+    url: str
+    tool: str = "ffuf"
+    wordlist: str = ""
+    method: str = "GET"
+    headers: list[dict] = []          # [{name, value}, ...]
+    extensions: str = ""              # "php,txt,bak" or ".php,.txt"
+    match_codes: str = ""             # ffuf -mc (blank = all)
+    filter_codes: str = "404"         # ffuf -fc / others' status filter
+    threads: int = 40
+    rps: int = 0                      # 0 = unlimited
+    recursion: int = 0                # depth (0 = off)
+    data: str = ""                    # request body for POST/PUT/…
+    deadline: int = 600
+    quick_wins: bool = False          # also probe .git/.env/swagger/backups
+
+
 # In-memory crawl jobs (id -> {queue, status}). A crawl runs against an already
 # loaded scan (live, imported, or from history) and fills its Endpoints tab.
 CRAWL_JOBS: dict[str, dict] = {}
+
+# In-memory fuzz jobs (id -> {queue, status, rows}). A fuzz job is standalone —
+# it targets a single URL the user typed in the Fuzzer tab, not a saved scan.
+FUZZ_JOBS: dict[str, dict] = {}
 
 
 def _apply_endpoints(scan, endpoints: list) -> None:
@@ -186,6 +209,14 @@ def _register_scan(data: dict) -> str:
     scan_id = uuid.uuid4().hex[:12]
     SCANS[scan_id] = LoadedScan(data)
     return scan_id
+
+
+@app.delete("/api/scans/{filename}")
+async def api_delete_scan(filename: str):
+    """Delete a saved scan file from ~/.reconmind/data."""
+    if not store.delete(filename):
+        raise HTTPException(404, "scan not found")
+    return {"ok": True}
 
 
 @app.post("/api/scans/{filename}/load")
@@ -324,6 +355,91 @@ async def api_crawl_events(job_id: str):
     job = CRAWL_JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "crawl job not found")
+    queue = job["queue"]
+
+    async def stream():
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=30)
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+                if job["status"] == "done":
+                    break
+                continue
+            yield f"data: {json.dumps(event)}\n\n"
+            if event["kind"] in ("done", "error"):
+                break
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.get("/api/wordlists")
+async def api_wordlists():
+    """Wordlists discovered on this machine, for the Fuzzer dropdown."""
+    return {"wordlists": fuzzer.discover_wordlists()}
+
+
+@app.get("/api/fuzz/tools")
+async def api_fuzz_tools():
+    """Which content-fuzzing tools are installed (ffuf/gobuster/…)."""
+    return fuzzer.fuzz_tools_summary()
+
+
+@app.post("/api/fuzz")
+async def api_fuzz(req: FuzzRequest):
+    """Start a single fuzz job against one URL; returns {job_id}. Results stream
+    over /api/fuzz/{job_id}/events."""
+    url = (req.url or "").strip()
+    if not url:
+        raise HTTPException(400, "Enter a URL to fuzz, e.g. https://example.com/FUZZ")
+
+    job_id = uuid.uuid4().hex[:12]
+    queue: asyncio.Queue = asyncio.Queue()
+    FUZZ_JOBS[job_id] = {"queue": queue, "status": "running", "rows": []}
+
+    opts = req.model_dump()
+
+    async def _run():
+        try:
+            def on_result(row):
+                FUZZ_JOBS[job_id]["rows"].append(row)
+                queue.put_nowait({"kind": "result", "row": row})
+
+            def on_progress(msg):
+                queue.put_nowait({"kind": "phase", "phase": msg})
+
+            result = await fuzzer.run_fuzz(opts, on_result=on_result,
+                                           on_progress=on_progress)
+            exposures = []
+            if req.quick_wins:
+                on_progress("probing for exposed files (.git/.env/swagger/backups)")
+                base = fuzzer._prep_url(url, req.tool)[1]
+                exposures = await fuzzer.quick_wins(
+                    [base],
+                    on_result=lambda r: queue.put_nowait({"kind": "exposure", "row": r}),
+                    on_progress=on_progress)
+            if not result.get("ok") and result.get("error"):
+                queue.put_nowait({"kind": "error", "message": result["error"]})
+            else:
+                queue.put_nowait({"kind": "done", "count": result.get("count", 0),
+                                  "exposures": len(exposures),
+                                  "truncated": result.get("truncated", False)})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            queue.put_nowait({"kind": "error", "message": str(e)})
+        finally:
+            FUZZ_JOBS[job_id]["status"] = "done"
+
+    _spawn(_run())
+    return {"job_id": job_id}
+
+
+@app.get("/api/fuzz/{job_id}/events")
+async def api_fuzz_events(job_id: str):
+    job = FUZZ_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "fuzz job not found")
     queue = job["queue"]
 
     async def stream():

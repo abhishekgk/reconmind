@@ -15,8 +15,12 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
+import httpx
+
 from .. import config
 from .runners import _env
+
+UA = "ReconMind/0.1 (+https://github.com/; educational recon)"
 
 # Static assets we don't care about as "endpoints".
 SKIP_EXT = {"png", "jpg", "jpeg", "gif", "svg", "css", "woff", "woff2", "ttf",
@@ -199,6 +203,53 @@ async def _historical(domain: str, deadline: int) -> set[str]:
     return gau_urls | wb_urls | uf_urls
 
 
+async def _probe_endpoints(rows: list[dict], deep: bool, on_progress=None) -> None:
+    """Fetch an HTTP status for each endpoint so the UI can tell live from dead.
+
+    Discovered URLs (especially from archives) are mostly 404/gone. We probe them
+    with a HEAD (falling back to GET when HEAD is disallowed), capped and under a
+    deadline so it stays fast; anything not probed keeps status=None ("unknown").
+    Sets row["status"] in place.
+    """
+    for r in rows:
+        r.setdefault("status", None)
+    if not rows:
+        return
+    cap = 4000 if deep else 1500
+    # Probe the most interesting first: URLs with params, then shorter paths.
+    ordered = sorted(rows, key=lambda r: (not r["params"], len(r["url"])))
+    targets = ordered[:cap]
+    if on_progress:
+        on_progress(f"probing {len(targets)} endpoints for HTTP status")
+
+    results: dict[str, int | None] = {}
+    sem = asyncio.Semaphore(80)
+
+    async with httpx.AsyncClient(follow_redirects=False, verify=False, timeout=6,
+                                 headers={"User-Agent": UA}) as client:
+        async def probe(url: str) -> None:
+            async with sem:
+                try:
+                    resp = await client.head(url)
+                    if resp.status_code in (405, 501):  # HEAD not allowed → GET
+                        async with client.stream("GET", url) as g:
+                            results[url] = g.status_code
+                    else:
+                        results[url] = resp.status_code
+                except Exception:
+                    results[url] = None
+
+        tasks = [asyncio.create_task(probe(r["url"])) for r in targets]
+        deadline = 180 if deep else 90
+        _, pending = await asyncio.wait(tasks, timeout=deadline)
+        for t in pending:
+            t.cancel()
+
+    for r in rows:
+        if r["url"] in results:
+            r["status"] = results[r["url"]]
+
+
 async def crawl(domain: str, live: list[dict], deep: bool = False,
                 on_progress=None) -> list[dict]:
     """Return a de-duplicated, in-scope list of endpoint rows.
@@ -239,4 +290,8 @@ async def crawl(domain: str, live: list[dict], deep: bool = False,
 
     rows = list(seen.values())
     rows.sort(key=lambda r: (r["host"], not r["params"], r["path"]))
-    return rows[:total_cap]
+    rows = rows[:total_cap]
+
+    # Probe each endpoint so the UI can show status (2xx live vs 404/dead).
+    await _probe_endpoints(rows, deep, on_progress=on_progress)
+    return rows

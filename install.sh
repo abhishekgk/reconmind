@@ -53,7 +53,7 @@ info "Core install complete — ReconMind will already run with keyless sources.
 # --- 3. Optional Go recon tools ------------------------------------------------
 echo
 if command -v go >/dev/null 2>&1; then
-  if ask "Install/upgrade the optional Go recon tools (subfinder, httpx, dnsx, gau, katana, naabu, ...)?"; then
+  if ask "Install/upgrade the optional Go tools (subfinder, httpx, katana, naabu, + the ffuf & gobuster fuzzers ...)?"; then
     GOTOOLS=(
       "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
       "github.com/tomnomnom/assetfinder@latest"
@@ -66,6 +66,9 @@ if command -v go >/dev/null 2>&1; then
       "github.com/projectdiscovery/katana/cmd/katana@latest"
       "github.com/projectdiscovery/tlsx/cmd/tlsx@latest"
       "github.com/sensepost/gowitness@latest"
+      # --- Fuzzer tab (content discovery) ---
+      "github.com/ffuf/ffuf/v2@latest"
+      "github.com/OJ/gobuster/v3@latest"
     )
     for t in "${GOTOOLS[@]}"; do
       info "go install $t"
@@ -81,7 +84,59 @@ else
   echo "   (ReconMind still works without them via its built-in keyless sources.)"
 fi
 
-# --- 4. Optional Ollama (local LLM) --------------------------------------------
+# --- 3b. Optional non-Go fuzzers (feroxbuster / dirb / wfuzz) ------------------
+echo
+if ask "Install extra fuzzers (feroxbuster, dirb, wfuzz)? (optional — ffuf + gobuster already cover most needs)"; then
+  OS="$(uname -s)"
+  if [ "$OS" = "Darwin" ]; then
+    if command -v brew >/dev/null 2>&1; then
+      brew install feroxbuster dirb || warn "brew install of feroxbuster/dirb had issues"
+    else warn "Homebrew not found — install feroxbuster/dirb manually."; fi
+  elif command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get update -qq && sudo apt-get install -y feroxbuster dirb || warn "apt install had issues (feroxbuster may need a newer distro)"
+  elif command -v dnf >/dev/null 2>&1; then
+    sudo dnf install -y dirb || warn "dnf install had issues"
+  elif command -v pacman >/dev/null 2>&1; then
+    sudo pacman -S --noconfirm feroxbuster dirb || warn "pacman install had issues"
+  else
+    warn "No known package manager — install feroxbuster/dirb from their project pages."
+  fi
+  # wfuzz is a Python tool — install it into the venv we just made.
+  python -m pip install wfuzz >/dev/null 2>&1 && info "wfuzz installed (in .venv)" || warn "wfuzz install skipped"
+  echo "${DIM}ReconMind's Fuzzer dropdown enables each tool automatically once it's on PATH.${RESET}"
+fi
+
+# --- 4. Wordlists for the Fuzzer -----------------------------------------------
+echo
+WLDIR="$HOME/.reconmind/wordlists"
+if ask "Download content-discovery wordlists for the Fuzzer (into ~/.reconmind/wordlists)?"; then
+  mkdir -p "$WLDIR"
+  BASE="https://raw.githubusercontent.com/danielmiessler/SecLists/master"
+  WLFILES=(
+    "Discovery/Web-Content/common.txt"
+    "Discovery/Web-Content/big.txt"
+    "Discovery/Web-Content/raft-medium-directories.txt"
+    "Discovery/Web-Content/raft-medium-files.txt"
+    "Discovery/Web-Content/raft-large-directories.txt"
+    "Discovery/Web-Content/api/api-endpoints.txt"
+    "Discovery/DNS/subdomains-top1million-5000.txt"
+    "Discovery/DNS/subdomains-top1million-20000.txt"
+  )
+  for f in "${WLFILES[@]}"; do
+    out="$WLDIR/$(basename "$f")"
+    info "fetch $(basename "$f")"
+    curl -fsSL "$BASE/$f" -o "$out" || warn "failed: $f"
+  done
+  if ask "Also clone the FULL SecLists (~1GB, needs git) for every wordlist?"; then
+    if command -v git >/dev/null 2>&1; then
+      info "cloning SecLists (shallow) into $WLDIR/SecLists"
+      git clone --depth 1 https://github.com/danielmiessler/SecLists.git "$WLDIR/SecLists" || warn "clone failed"
+    else warn "git not found — skipping full SecLists (the curated set above still works)."; fi
+  fi
+  echo "${DIM}Wordlists in $WLDIR — they appear in the Fuzzer dropdown automatically.${RESET}"
+fi
+
+# --- 5. Optional Ollama (local LLM) --------------------------------------------
 echo
 if command -v ollama >/dev/null 2>&1; then
   info "Ollama already installed."

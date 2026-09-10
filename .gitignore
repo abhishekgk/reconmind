@@ -19,6 +19,8 @@ keys.json
 subfinder-provider-config.yaml
 resolvers.txt
 wordlist.txt
+wordlists/
+SecLists/
 .env
 .env.*
 *.scan.json
