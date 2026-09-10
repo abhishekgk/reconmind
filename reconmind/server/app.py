@@ -519,6 +519,8 @@ async def api_nuclei(req: NucleiRequest):
                 queue.put_nowait({"kind": "error", "message": result["error"]})
             else:
                 queue.put_nowait({"kind": "done", "count": result.get("count", 0),
+                                  "loaded": result.get("loaded"),
+                                  "note": result.get("note", ""),
                                   "truncated": result.get("truncated", False)})
         except Exception as e:
             import traceback

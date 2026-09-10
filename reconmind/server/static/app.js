@@ -843,7 +843,10 @@ function startNuclei(){
         if(ev.kind==="phase") $("nkPhase").textContent="▸ "+ev.phase;
         else if(ev.kind==="finding"){ NUKE.rows.push(ev.row); scheduleNukeRender(); }
         else if(ev.kind==="done"){ es.close(); NUKE.running=false; updateNukeButtons();
-          $("nkPhase").textContent=`✓ done — ${NUKE.rows.length} finding${NUKE.rows.length===1?"":"s"}${ev.truncated?" (capped at 5000)":""}`; renderNukeResults(); }
+          const loaded=(ev.loaded!=null)?` · ${ev.loaded} template(s) run`:"";
+          const note=ev.note?`  —  ⚠ ${ev.note}`:"";
+          $("nkPhase").textContent=`✓ done — ${NUKE.rows.length} finding${NUKE.rows.length===1?"":"s"}${loaded}${ev.truncated?" (capped at 5000)":""}${note}`;
+          NUKE.lastNote=ev.note||""; renderNukeResults(); }
         else if(ev.kind==="error"){ es.close(); NUKE.running=false; updateNukeButtons(); $("nkPhase").textContent="⚠ "+(ev.message||"error"); renderNukeResults(); }
       };
       es.onerror=()=>{ es.close(); NUKE.running=false; updateNukeButtons(); if(!$("nkPhase").textContent.startsWith("✓")) $("nkPhase").textContent="▸ stream ended"; };
@@ -867,7 +870,8 @@ function renderNukeResults(){
     </div>
     <div class="facets">${sevChips}</div>`;
   if(!total){
-    html+=`<p class="muted">${NUKE.running?"Scanning… findings stream in here as nuclei reports them.":"No findings yet. Add targets, optionally pick module folders / tags / severity above, then hit <b>Scan</b>. Leaving template selection blank runs <b>every</b> template (slow — narrow it down for speed)."}</p>`;
+    const noteHtml=(!NUKE.running&&NUKE.lastNote)?`<p class="expbox" style="border-color:#d2992244;color:var(--warn)">⚠ ${esc(NUKE.lastNote)}</p>`:"";
+    html+=noteHtml+`<p class="muted">${NUKE.running?"Scanning… findings stream in here as nuclei reports them.":"No findings yet. Add targets, optionally pick module folders / tags / severity above, then hit <b>Scan</b>. Leaving template selection blank runs <b>every</b> template (slow — narrow it down for speed). Tip: <code>http/technologies</code>, <code>exposed-panels</code> and most <code>exposures</code> are <b>info</b> severity — uncheck the severity boxes (or add info) to see them."}</p>`;
   } else {
     const sr=r=>SEV_ORDER.indexOf(r.severity); rows.sort((a,b)=>sr(a)-sr(b)||(a.template||"").localeCompare(b.template||""));
     const shown=rows.slice(0,3000);

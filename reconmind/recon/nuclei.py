@@ -202,6 +202,28 @@ async def run_nuclei(opts: dict, on_result=None, on_progress=None) -> dict:
                 + (f", severity={','.join(sev)}" if sev else ""))
 
     findings: list[dict] = []
+    stats = {"loaded": None, "note": ""}
+
+    def on_err(line: str):
+        # nuclei prints its status/errors to stderr; surface the useful bits.
+        low = line.lower()
+        m = re.search(r"Templates loaded for current scan:\s*(\d+)", line)
+        no_templates = ("templates were found" in low or "no templates provided" in low
+                        or "no valid templates" in low)
+        if m:
+            stats["loaded"] = int(m.group(1))
+            on_progress(f"{stats['loaded']} template(s) loaded — scanning…")
+            if stats["loaded"] == 0:
+                no_templates = True
+        if no_templates:
+            stats["loaded"] = stats["loaded"] or 0
+            stats["note"] = ("0 templates matched your selection — your severity filter "
+                             "and module/tag choice don't overlap (e.g. http/technologies, "
+                             "exposed-panels and most exposures are 'info' severity).")
+            on_progress("⚠ " + stats["note"])
+        elif "[ftl]" in low:
+            stats["note"] = line.split("]", 1)[-1].strip()
+            on_progress("nuclei: " + stats["note"])
 
     def on_line(line: str):
         line = line.strip()
@@ -230,7 +252,7 @@ async def run_nuclei(opts: dict, on_result=None, on_progress=None) -> dict:
         on_result(row)
 
     try:
-        await _stream(cmd, deadline, on_line)
+        await _stream(cmd, deadline, on_line, on_err=on_err)
     except Exception as e:
         return {"ok": False, "error": str(e), "findings": findings,
                 "count": len(findings)}
@@ -241,18 +263,33 @@ async def run_nuclei(opts: dict, on_result=None, on_progress=None) -> dict:
     sev_rank = {s: i for i, s in enumerate(SEVERITIES)}
     findings.sort(key=lambda r: (sev_rank.get(r["severity"], 9), r["template"]))
     return {"ok": True, "count": len(findings), "findings": findings,
+            "loaded": stats["loaded"], "note": stats["note"],
             "truncated": len(findings) >= RESULT_CAP}
 
 
-async def _stream(cmd: list[str], deadline_s: float, on_line):
-    """Run nuclei and hand each stdout line to on_line until a deadline; kill on
-    timeout so a long scan can't hang the server."""
+async def _stream(cmd: list[str], deadline_s: float, on_line, on_err=None):
+    """Run nuclei; hand stdout lines to on_line and stderr lines to on_err until
+    a deadline. Kills on timeout so a long scan can't hang the server. nuclei
+    reports findings on stdout (-jsonl) and its status/errors on stderr."""
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL, env=_env())
+            stderr=asyncio.subprocess.PIPE, env=_env())
     except (FileNotFoundError, OSError):
         return
+
+    async def drain_err():
+        try:
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                if on_err:
+                    on_err(line.decode(errors="replace").rstrip())
+        except Exception:
+            pass
+
+    err_task = asyncio.create_task(drain_err())
     loop = asyncio.get_running_loop()
     end = loop.time() + deadline_s
     try:
@@ -274,3 +311,4 @@ async def _stream(cmd: list[str], deadline_s: float, on_line):
                 await proc.wait()
             except ProcessLookupError:
                 pass
+        err_task.cancel()
