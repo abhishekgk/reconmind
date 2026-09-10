@@ -51,6 +51,7 @@
   .pill b{color:var(--text)}
   .tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:10px;flex-wrap:wrap}
   .tab.fuzz.active{border-bottom-color:var(--warn)}
+  .tab.nuke.active{border-bottom-color:var(--bad)}
   .tab{padding:8px 14px;cursor:pointer;color:var(--dim);border-bottom:2px solid transparent;font-size:13px}
   .tab.active{color:var(--text);border-bottom-color:var(--accent)}
   .tab b{color:var(--accent2)}
@@ -168,6 +169,8 @@
   .sev{font-family:var(--mono);font-size:10px;font-weight:700;border-radius:4px;padding:1px 6px;color:#000}
   .sev.high{background:var(--bad);color:#fff} .sev.medium{background:var(--warn)}
   .sev.low{background:#2ea04355;color:var(--accent)} .sev.info{background:var(--panel2);color:var(--dim);border:1px solid var(--border)}
+  .sev.critical{background:#c9184a;color:#fff} .sev.unknown{background:var(--panel2);color:var(--dim);border:1px solid var(--border)}
+  .nkbanner{color:var(--dim);font-size:12px;margin-bottom:4px}
   .expbox{border:1px solid #d2992244;background:#241f11;border-radius:10px;padding:10px 12px;margin-bottom:12px}
   .expbox h4{margin:0 0 8px;font-size:12px;color:var(--warn);text-transform:uppercase;letter-spacing:.5px}
   .exprow{display:flex;gap:10px;align-items:center;font-size:12px;padding:4px 0;border-bottom:1px solid #ffffff10}
@@ -225,6 +228,7 @@
       <div class="tab" data-tab="takeovers">Takeovers <b id="tTakeovers">0</b></div>
       <div class="tab" data-tab="related">Related domains <b id="tRelated">0</b></div>
       <div class="tab fuzz" data-tab="fuzzer" title="manual content fuzzing — pick a tool + wordlist, set method &amp; headers">🎯 Fuzzer</div>
+      <div class="tab nuke" data-tab="nuclei" title="template-based vulnerability scanning with nuclei — modules, tags, severity, rate limits">☢ Nuclei</div>
     </div>
 
     <div class="filterbar" id="filterbar">
@@ -337,6 +341,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=12"></script>
+<script src="/static/app.js?v=13"></script>
 </body>
 </html>

@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .. import config, keys, llm, report, store, tools
-from ..recon import fuzzer
+from ..recon import fuzzer, nuclei
 from ..recon.crawl import crawl as run_crawl
 from ..recon.orchestrator import Scan, run_scan
 
@@ -121,6 +121,23 @@ class FuzzRequest(BaseModel):
     quick_wins: bool = False          # also probe .git/.env/swagger/backups
 
 
+class NucleiRequest(BaseModel):
+    """A UI-driven nuclei scan (the Nuclei tab)."""
+    targets: str = ""                 # one URL, or many (newline/space/comma)
+    scan_id: str | None = None        # pull live hosts from this loaded scan…
+    use_scan: bool = False            # …when true
+    templates: list[str] = []         # module rel-paths e.g. ["http/cves"]
+    template_path: str = ""           # a custom -t path (file or dir)
+    tags: str = ""                    # comma/space separated
+    severity: list[str] = []          # info/low/medium/high/critical/unknown
+    rate_limit: int = 150
+    concurrency: int = 25
+    bulk_size: int = 25
+    timeout: int = 10
+    retries: int = 1
+    deadline: int = 900
+
+
 # In-memory crawl jobs (id -> {queue, status}). A crawl runs against an already
 # loaded scan (live, imported, or from history) and fills its Endpoints tab.
 CRAWL_JOBS: dict[str, dict] = {}
@@ -128,6 +145,9 @@ CRAWL_JOBS: dict[str, dict] = {}
 # In-memory fuzz jobs (id -> {queue, status, rows}). A fuzz job is standalone —
 # it targets a single URL the user typed in the Fuzzer tab, not a saved scan.
 FUZZ_JOBS: dict[str, dict] = {}
+
+# In-memory nuclei jobs (id -> {queue, status, findings}).
+NUCLEI_JOBS: dict[str, dict] = {}
 
 
 def _apply_endpoints(scan, endpoints: list) -> None:
@@ -440,6 +460,82 @@ async def api_fuzz_events(job_id: str):
     job = FUZZ_JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "fuzz job not found")
+    queue = job["queue"]
+
+    async def stream():
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=30)
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+                if job["status"] == "done":
+                    break
+                continue
+            yield f"data: {json.dumps(event)}\n\n"
+            if event["kind"] in ("done", "error"):
+                break
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.get("/api/nuclei/meta")
+async def api_nuclei_meta():
+    """Nuclei availability, templates dir, module folders, severities, tags."""
+    return nuclei.nuclei_meta()
+
+
+@app.post("/api/nuclei")
+async def api_nuclei(req: NucleiRequest):
+    """Start a nuclei scan; returns {job_id}. Findings stream over
+    /api/nuclei/{job_id}/events."""
+    targets = nuclei._norm_targets(req.targets)
+    if req.use_scan and req.scan_id and req.scan_id in SCANS:
+        data = SCANS[req.scan_id].to_dict()
+        targets += [h["url"] for h in data.get("hosts", [])
+                    if h.get("live") and h.get("url")]
+    targets = list(dict.fromkeys(targets))  # de-dup, preserve order
+    if not targets:
+        raise HTTPException(400, "No targets — enter a URL, paste a list, or tick "
+                                 "'use loaded scan' with a scan that has live hosts.")
+
+    job_id = uuid.uuid4().hex[:12]
+    queue: asyncio.Queue = asyncio.Queue()
+    NUCLEI_JOBS[job_id] = {"queue": queue, "status": "running", "findings": []}
+    opts = req.model_dump()
+    opts["targets"] = targets
+
+    async def _run():
+        try:
+            def on_result(row):
+                NUCLEI_JOBS[job_id]["findings"].append(row)
+                queue.put_nowait({"kind": "finding", "row": row})
+
+            def on_progress(msg):
+                queue.put_nowait({"kind": "phase", "phase": msg})
+
+            result = await nuclei.run_nuclei(opts, on_result=on_result,
+                                             on_progress=on_progress)
+            if not result.get("ok") and result.get("error"):
+                queue.put_nowait({"kind": "error", "message": result["error"]})
+            else:
+                queue.put_nowait({"kind": "done", "count": result.get("count", 0),
+                                  "truncated": result.get("truncated", False)})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            queue.put_nowait({"kind": "error", "message": str(e)})
+        finally:
+            NUCLEI_JOBS[job_id]["status"] = "done"
+
+    _spawn(_run())
+    return {"job_id": job_id, "targets": len(targets)}
+
+
+@app.get("/api/nuclei/{job_id}/events")
+async def api_nuclei_events(job_id: str):
+    job = NUCLEI_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "nuclei job not found")
     queue = job["queue"]
 
     async def stream():

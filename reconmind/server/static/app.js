@@ -240,10 +240,11 @@ async function computeDiff(data){
 
 // ---------- tabs + generic table ----------
 function render(){
-  const fuzzing = activeTab==="fuzzer";
-  $("filterbar").style.display = fuzzing ? "none" : "";
-  $("facets").style.display    = fuzzing ? "none" : "";
-  if(fuzzing){ renderFuzzer(); return; }
+  const custom = activeTab==="fuzzer" || activeTab==="nuclei";
+  $("filterbar").style.display = custom ? "none" : "";
+  $("facets").style.display    = custom ? "none" : "";
+  if(activeTab==="fuzzer"){ renderFuzzer(); return; }
+  if(activeTab==="nuclei"){ renderNuclei(); return; }
   if(!scanData){ $("panel").innerHTML=""; return; }
   $("liveWrap").style.display   = activeTab==="subs" ? "flex" : "none";
   $("paramsWrap").style.display = activeTab==="endpoints" ? "flex" : "none";
@@ -729,6 +730,160 @@ function renderFuzzResults(){
   const rf=$("fzResFilter"); if(rf) rf.oninput=()=>{ FUZZ.filter=rf.value; renderFuzzResults(); const nf=$("fzResFilter"); if(nf){ nf.focus(); nf.setSelectionRange(nf.value.length,nf.value.length);} };
   out.querySelectorAll("[data-fzs]").forEach(el=>el.onclick=()=>{ const b=el.dataset.fzs; FUZZ.statusFacet.has(b)?FUZZ.statusFacet.delete(b):FUZZ.statusFacet.add(b); renderFuzzResults(); });
   const ex=$("fzExport"); if(ex) ex.onclick=()=>dl(`fuzz_${(scanData&&scanData.domain)||"results"}.txt`, FUZZ.rows.map(r=>r.url).join("\n"));
+}
+
+// ========================================================================
+// Nuclei tab — UI-driven template vulnerability scanning
+// ========================================================================
+let NUKE = {
+  targets:"", modules:[], tags:"", severity:new Set(["critical","high","medium"]),
+  template_path:"", rate_limit:150, concurrency:25, bulk_size:25, timeout:10,
+  retries:1, deadline:900, rows:[], running:false, es:null, filter:"", sevFacet:new Set(),
+};
+let NUKE_META = null;
+const SEV_ORDER = ["critical","high","medium","low","info","unknown"];
+
+async function loadNukeMeta(){
+  if(!NUKE_META){ try{ NUKE_META = await (await fetch("/api/nuclei/meta")).json(); }catch(e){ NUKE_META={installed:false,modules:[],severities:SEV_ORDER,suggested_tags:[]}; } }
+  const banner=$("nkBanner");
+  if(banner){
+    if(!NUKE_META.installed) banner.innerHTML=`<span style="color:var(--bad)">nuclei not installed</span> — <code>${esc(NUKE_META.install||"go install …/nuclei")}</code>`;
+    else banner.innerHTML=`nuclei <b>${esc(NUKE_META.version||"")}</b> · ${(NUKE_META.modules||[]).length} module folders · templates: <code>${esc(NUKE_META.templates_dir||"?")}</code>`;
+  }
+  const msel=$("nkModules");
+  if(msel && NUKE_META.modules){ msel.innerHTML=NUKE_META.modules.map(m=>`<option value="${esc(m.path)}" ${NUKE.modules.includes(m.path)?"selected":""}>${esc(m.path)} (${m.count})</option>`).join(""); }
+  const tagwrap=$("nkTagSuggest");
+  if(tagwrap && NUKE_META.suggested_tags){ tagwrap.innerHTML=(NUKE_META.suggested_tags||[]).map(t=>`<span class="facet" data-nktag="${esc(t)}">${esc(t)}</span>`).join(""); tagwrap.querySelectorAll("[data-nktag]").forEach(el=>el.onclick=()=>{ const inp=$("nkTags"); const have=inp.value.split(/[\s,]+/).filter(Boolean); const t=el.dataset.nktag; if(!have.includes(t)) inp.value=(have.concat(t)).join(","); NUKE.tags=inp.value; }); }
+}
+
+function nukeFormHTML(){
+  const liveHosts=(scanData&&scanData.hosts?scanData.hosts.filter(h=>h.live&&h.url):[]);
+  const sevChip=(s)=>`<label class="chk" style="gap:5px"><input type="checkbox" class="nkSev" value="${s}" ${NUKE.severity.has(s)?"checked":""}> <span class="sev ${s}">${s}</span></label>`;
+  return `<div class="fz" id="nkForm">
+    <div class="nkbanner small" id="nkBanner"></div>
+    <div class="grp">
+      <h4>Targets <span class="small">— one per line; a single line uses -u, many use a temp -l file</span></h4>
+      <textarea id="nkTargets" style="min-height:70px" placeholder="https://target.com&#10;https://api.target.com">${esc(NUKE.targets)}</textarea>
+      <div class="row" style="margin-top:8px">
+        ${liveHosts.length?`<button class="iconbtn" id="nkFromScan">＋ load ${liveHosts.length} live host(s) from scan</button>`:`<span class="small">load a scan to bulk-scan its live hosts</span>`}
+        <button class="iconbtn" id="nkClearTargets">clear</button>
+      </div>
+    </div>
+    <div class="grp">
+      <h4>What to run <span class="small">— combine any of these; leave ALL blank = full scan (every template)</span></h4>
+      <div class="row" style="align-items:flex-start;gap:16px">
+        <label class="fl" style="min-width:220px">module folders <span class="small">(Cmd/Ctrl-click for several)</span>
+          <select id="nkModules" multiple size="8" style="min-width:240px"></select></label>
+        <div style="flex:1;min-width:220px">
+          <label class="fl">tags <span class="small">(comma separated)</span>
+            <input type="text" id="nkTags" placeholder="cve,exposure,takeover" value="${esc(NUKE.tags)}"></label>
+          <div class="facets" id="nkTagSuggest" style="margin-top:6px"></div>
+          <label class="fl" style="margin-top:8px">custom template path <span class="small">(a .yaml or a dir)</span>
+            <input type="text" id="nkTemplatePath" placeholder="/path/to/template.yaml" value="${esc(NUKE.template_path)}"></label>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <div class="small" style="margin-bottom:4px">severity</div>
+        <div class="row">${SEV_ORDER.map(sevChip).join("")}</div>
+      </div>
+    </div>
+    <div class="opts">
+      <label class="fl">rate limit/s<input type="text" id="nkRate" value="${esc(String(NUKE.rate_limit))}" title="-rl requests/sec"></label>
+      <label class="fl">concurrency<input type="text" id="nkConc" value="${esc(String(NUKE.concurrency))}" title="-c templates in parallel"></label>
+      <label class="fl">bulk size<input type="text" id="nkBulk" value="${esc(String(NUKE.bulk_size))}" title="-bs hosts per template"></label>
+      <label class="fl">timeout<input type="text" id="nkTimeout" value="${esc(String(NUKE.timeout))}"></label>
+      <label class="fl">retries<input type="text" id="nkRetries" value="${esc(String(NUKE.retries))}"></label>
+      <label class="fl">max time (s)<input type="text" id="nkDeadline" value="${esc(String(NUKE.deadline))}" title="hard cap on the whole scan"></label>
+      <div style="display:flex;gap:8px;align-self:flex-end">
+        <button id="nkStart" class="warn" style="background:var(--bad);color:#fff">▶ Scan</button>
+        <button id="nkStop" class="ghost" ${NUKE.running?"":"disabled"}>■ Stop</button>
+      </div>
+    </div>
+    <div class="phase" id="nkPhase"></div>
+  </div>
+  <div id="nkOut"></div>`;
+}
+function syncNukeState(){
+  const g=(id)=>$(id)?$(id).value:"";
+  NUKE.targets=g("nkTargets"); NUKE.tags=g("nkTags"); NUKE.template_path=g("nkTemplatePath");
+  NUKE.modules=$("nkModules")?Array.from($("nkModules").selectedOptions).map(o=>o.value):NUKE.modules;
+  NUKE.severity=new Set(Array.from(document.querySelectorAll(".nkSev:checked")).map(c=>c.value));
+  NUKE.rate_limit=parseInt(g("nkRate"))||150; NUKE.concurrency=parseInt(g("nkConc"))||25;
+  NUKE.bulk_size=parseInt(g("nkBulk"))||25; NUKE.timeout=parseInt(g("nkTimeout"))||10;
+  NUKE.retries=parseInt(g("nkRetries"))||1; NUKE.deadline=parseInt(g("nkDeadline"))||900;
+}
+function buildNukeForm(){
+  $("panel").innerHTML=nukeFormHTML();
+  $("nkStart").onclick=startNuclei; $("nkStop").onclick=stopNuclei;
+  $("nkClearTargets").onclick=()=>{ $("nkTargets").value=""; NUKE.targets=""; };
+  const fs=$("nkFromScan"); if(fs) fs.onclick=()=>{ const urls=(scanData.hosts||[]).filter(h=>h.live&&h.url).map(h=>h.url); const cur=$("nkTargets").value.trim(); $("nkTargets").value=(cur?cur+"\n":"")+urls.join("\n"); NUKE.targets=$("nkTargets").value; };
+  loadNukeMeta();
+}
+function renderNuclei(){ if(!$("nkForm")) buildNukeForm(); renderNukeResults(); }
+let nkRenderPending=false;
+function scheduleNukeRender(){ if(nkRenderPending) return; nkRenderPending=true; setTimeout(()=>{ nkRenderPending=false; if(activeTab==="nuclei") renderNukeResults(); },350); }
+
+function startNuclei(){
+  syncNukeState();
+  if(!NUKE.targets.trim()){ alert("Enter at least one target URL (or load live hosts from a scan)."); return; }
+  if(NUKE_META && !NUKE_META.installed){ alert("nuclei is not installed."); return; }
+  NUKE.rows=[]; NUKE.running=true; if(NUKE.es){ try{NUKE.es.close();}catch(e){} }
+  updateNukeButtons(); renderNukeResults();
+  const body={ targets:NUKE.targets, templates:NUKE.modules, tags:NUKE.tags,
+    template_path:NUKE.template_path, severity:Array.from(NUKE.severity),
+    rate_limit:NUKE.rate_limit, concurrency:NUKE.concurrency, bulk_size:NUKE.bulk_size,
+    timeout:NUKE.timeout, retries:NUKE.retries, deadline:NUKE.deadline };
+  $("nkPhase").textContent="▸ starting…";
+  fetch("/api/nuclei",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
+    .then(r=>r.json()).then(res=>{
+      if(!res.job_id){ $("nkPhase").textContent="⚠ "+(res.detail||"failed to start"); NUKE.running=false; updateNukeButtons(); return; }
+      $("nkPhase").textContent=`▸ scanning ${res.targets} target(s)…`;
+      const es=new EventSource(`/api/nuclei/${res.job_id}/events`); NUKE.es=es;
+      es.onmessage=(e)=>{ const ev=JSON.parse(e.data);
+        if(ev.kind==="phase") $("nkPhase").textContent="▸ "+ev.phase;
+        else if(ev.kind==="finding"){ NUKE.rows.push(ev.row); scheduleNukeRender(); }
+        else if(ev.kind==="done"){ es.close(); NUKE.running=false; updateNukeButtons();
+          $("nkPhase").textContent=`✓ done — ${NUKE.rows.length} finding${NUKE.rows.length===1?"":"s"}${ev.truncated?" (capped at 5000)":""}`; renderNukeResults(); }
+        else if(ev.kind==="error"){ es.close(); NUKE.running=false; updateNukeButtons(); $("nkPhase").textContent="⚠ "+(ev.message||"error"); renderNukeResults(); }
+      };
+      es.onerror=()=>{ es.close(); NUKE.running=false; updateNukeButtons(); if(!$("nkPhase").textContent.startsWith("✓")) $("nkPhase").textContent="▸ stream ended"; };
+    }).catch(()=>{ $("nkPhase").textContent="⚠ failed to start"; NUKE.running=false; updateNukeButtons(); });
+}
+function stopNuclei(){ if(NUKE.es){ try{NUKE.es.close();}catch(e){} } NUKE.running=false; updateNukeButtons(); $("nkPhase").textContent="■ stopped listening (server finishes under its max-time)"; }
+function updateNukeButtons(){ const s=$("nkStart"),t=$("nkStop"); if(s){ s.disabled=NUKE.running; s.textContent=NUKE.running?"scanning…":"▶ Scan"; } if(t) t.disabled=!NUKE.running; }
+
+function renderNukeResults(){
+  const out=$("nkOut"); if(!out) return;
+  const total=NUKE.rows.length;
+  let rows=NUKE.rows.slice();
+  if(NUKE.sevFacet.size) rows=rows.filter(r=>NUKE.sevFacet.has(r.severity));
+  const f=(NUKE.filter||"").toLowerCase();
+  if(f) rows=rows.filter(r=>(r.template||"").toLowerCase().includes(f)||(r.name||"").toLowerCase().includes(f)||(r.url||"").toLowerCase().includes(f)||(r.tags||[]).join(",").toLowerCase().includes(f));
+  const sevChips=SEV_ORDER.map(s=>{ const n=NUKE.rows.filter(r=>r.severity===s).length; if(!n&&!NUKE.sevFacet.has(s)) return ""; return `<span class="facet ${NUKE.sevFacet.has(s)?'on':''}" data-nksev="${s}"><span class="sev ${s}">${s}</span> <b>${n}</b></span>`; }).join("");
+  let html=`<div class="filterbar" style="margin-top:4px">
+      <input id="nkResFilter" type="text" placeholder="filter findings…" style="min-width:160px;flex:0 1 260px" value="${esc(NUKE.filter||"")}">
+      <span class="muted">${rows.length} / ${total} shown${NUKE.running?' · <span style="color:var(--bad)">scanning…</span>':''}</span>
+      <div style="margin-left:auto"><button class="ghost sm" id="nkExport" ${total?"":"disabled"}>⬇ Export</button></div>
+    </div>
+    <div class="facets">${sevChips}</div>`;
+  if(!total){
+    html+=`<p class="muted">${NUKE.running?"Scanning… findings stream in here as nuclei reports them.":"No findings yet. Add targets, optionally pick module folders / tags / severity above, then hit <b>Scan</b>. Leaving template selection blank runs <b>every</b> template (slow — narrow it down for speed)."}</p>`;
+  } else {
+    const sr=r=>SEV_ORDER.indexOf(r.severity); rows.sort((a,b)=>sr(a)-sr(b)||(a.template||"").localeCompare(b.template||""));
+    const shown=rows.slice(0,3000);
+    html+=`<table><thead><tr><th>Severity</th><th>Template</th><th>Name</th><th>Matched URL</th><th>Tags</th></tr></thead><tbody>`+
+      shown.map(r=>`<tr>
+        <td><span class="sev ${esc(r.severity)}">${esc(r.severity)}</span></td>
+        <td class="mono">${esc(r.template)}</td>
+        <td>${esc(r.name)}</td>
+        <td class="mono"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc((r.url||"").length>90?r.url.slice(0,90)+'…':r.url)}</a></td>
+        <td class="muted">${(r.tags||[]).slice(0,5).map(t=>`<span class="tag">${esc(t)}</span>`).join("")}</td></tr>`).join("")+`</tbody></table>`;
+    if(shown.length<rows.length) html+=`<p class="muted">Showing first ${shown.length} of ${rows.length} — refine the filter.</p>`;
+  }
+  out.innerHTML=html;
+  const rf=$("nkResFilter"); if(rf) rf.oninput=()=>{ NUKE.filter=rf.value; renderNukeResults(); const n=$("nkResFilter"); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length);} };
+  out.querySelectorAll("[data-nksev]").forEach(el=>el.onclick=()=>{ const s=el.dataset.nksev; NUKE.sevFacet.has(s)?NUKE.sevFacet.delete(s):NUKE.sevFacet.add(s); renderNukeResults(); });
+  const ex=$("nkExport"); if(ex) ex.onclick=()=>dl(`nuclei_findings.txt`, NUKE.rows.map(r=>`[${r.severity}] ${r.template} ${r.url}`).join("\n"));
 }
 
 // ---------- wire up ----------
