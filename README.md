@@ -223,6 +223,26 @@ python run.py
 | `RECONMIND_RESOLVERS`  | Resolvers file for mass DNS                      | public fallback    |
 | `RECONMIND_DATA`       | Where scans are saved (JSON, one file per scan)  | `~/.reconmind/data`|
 | `OLLAMA_HOST`          | Ollama API URL                                   | `http://127.0.0.1:11434` |
+| `RECONMIND_WORDLIST_DIRS` | Extra dirs to scan for Fuzzer wordlists (`:`-separated) | built-in set |
+| `RECONMIND_AUTH`       | Require login on every API route (for hosting)   | off (local, open)  |
+| `RECONMIND_ALLOW_REGISTER` | Allow account registration                   | first account only |
+| `RECONMIND_HTTPS`      | Mark the session cookie `Secure` (set behind TLS)| off                |
+
+## Hosting it behind a login
+
+ReconMind is a **localhost tool by default** — no auth, zero friction. If you want to host it
+so only authorized users can run it, set `RECONMIND_AUTH=1`. Then:
+
+- Every `/api/*` route requires a logged-in session; the UI shows a login/register overlay.
+- The **first** account can be registered from the UI (bootstrap); after that, registration is
+  closed unless you set `RECONMIND_ALLOW_REGISTER=1`. Accounts share one workspace (scans, keys,
+  findings) — auth is a gate, not multi-tenancy.
+- Passwords are hashed with `scrypt`; sessions are HTTP-only cookies. Put it behind HTTPS (a
+  reverse proxy) and set `RECONMIND_HTTPS=1` so the cookie is marked `Secure`.
+
+> ⚠️ **It's an active scanner.** Anyone who can log in can launch ffuf/nuclei from your server at
+> any target. Always set a **Scope allow-list** (🎯 Scope in the header) so out-of-scope targets
+> are refused, keep the box on a private network, and only expose it to people you trust.
 
 ## How it's organized
 

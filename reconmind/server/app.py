@@ -16,15 +16,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import config, keys, llm, report, store, tools
+from .. import auth, config, keys, llm, report, scope, store, tools
 from ..recon import fuzzer, nuclei
 from ..recon.crawl import crawl as run_crawl
 from ..recon.orchestrator import Scan, run_scan
@@ -47,6 +48,23 @@ async def no_cache(request, call_next):
     if request.url.path == "/" or request.url.path.startswith("/static"):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return response
+
+
+# Public API paths that must work before a user is logged in.
+_AUTH_PUBLIC = {"/api/auth/status", "/api/auth/login", "/api/auth/register"}
+
+
+@app.middleware("http")
+async def auth_gate(request: Request, call_next):
+    """When RECONMIND_AUTH is on, require a valid session for every /api route
+    except the auth endpoints. The SPA shell + /static load freely; the frontend
+    shows a login overlay when /api/auth/status says a session is required."""
+    if auth.enabled():
+        path = request.url.path
+        if path.startswith("/api/") and path not in _AUTH_PUBLIC:
+            if not auth.session_user(request.cookies.get(auth.COOKIE)):
+                return JSONResponse({"detail": "authentication required"}, status_code=401)
+    return await call_next(request)
 
 # In-memory registry of live scans (id -> Scan). Finished scans are also on disk.
 SCANS: dict[str, Scan] = {}
@@ -214,6 +232,72 @@ async def index():
     return FileResponse(STATIC / "index.html")
 
 
+# --- Auth (optional; active only when RECONMIND_AUTH is set) ------------------
+
+class AuthRequest(BaseModel):
+    username: str = ""
+    password: str = ""
+
+
+@app.get("/api/auth/status")
+async def api_auth_status(request: Request):
+    user = auth.session_user(request.cookies.get(auth.COOKIE)) if auth.enabled() else None
+    return {
+        "auth_required": auth.enabled(),
+        # When auth is off, everyone is implicitly "authenticated".
+        "authenticated": (user is not None) or (not auth.enabled()),
+        "user": user,
+        "allow_registration": auth.enabled() and auth.allow_registration(),
+    }
+
+
+@app.post("/api/auth/register")
+async def api_auth_register(req: AuthRequest):
+    if not auth.enabled():
+        raise HTTPException(400, "auth is not enabled on this server")
+    ok, msg = auth.register(req.username, req.password)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True}
+
+
+@app.post("/api/auth/login")
+async def api_auth_login(req: AuthRequest):
+    if not auth.enabled():
+        raise HTTPException(400, "auth is not enabled on this server")
+    if not auth.verify(req.username, req.password):
+        raise HTTPException(401, "invalid username or password")
+    token = auth.create_session(req.username)
+    resp = JSONResponse({"ok": True, "user": req.username.strip().lower()})
+    resp.set_cookie(auth.COOKIE, token, httponly=True, samesite="lax",
+                    secure=auth.cookie_secure(), max_age=auth.SESSION_TTL)
+    return resp
+
+
+@app.post("/api/auth/logout")
+async def api_auth_logout(request: Request):
+    auth.destroy_session(request.cookies.get(auth.COOKIE))
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.COOKIE)
+    return resp
+
+
+# --- Scope allow-list ---------------------------------------------------------
+
+class ScopeRequest(BaseModel):
+    in_scope: list[str] = []
+
+
+@app.get("/api/scope")
+async def api_get_scope():
+    return {"in_scope": scope.get_scope()}
+
+
+@app.post("/api/scope")
+async def api_set_scope(req: ScopeRequest):
+    return {"in_scope": scope.set_scope(req.in_scope)}
+
+
 @app.get("/api/tools")
 async def api_tools():
     return tools.summary()
@@ -307,6 +391,9 @@ async def api_start_scan(req: ScanRequest):
     domain = _norm_domain(req.domain)
     if not domain or "." not in domain:
         raise HTTPException(400, "Please provide a valid domain, e.g. example.com")
+    if not scope.in_scope(domain):
+        raise HTTPException(400, f"'{domain}' is not in your scope allow-list. "
+                                 "Add it under Scope, or clear the list to allow any target.")
     scan = Scan(domain=domain, active=req.active, deep=req.deep,
                 crawl=req.crawl, brute_limit=req.brute_limit)
     scan_id = uuid.uuid4().hex[:12]
@@ -451,6 +538,9 @@ async def api_fuzz(req: FuzzRequest):
     url = (req.url or "").strip()
     if not url:
         raise HTTPException(400, "Enter a URL to fuzz, e.g. https://example.com/FUZZ")
+    if not scope.in_scope(url):
+        raise HTTPException(400, "That target is out of scope. Add its host to the "
+                                 "Scope allow-list, or clear the list to allow any target.")
 
     job_id = uuid.uuid4().hex[:12]
     queue: asyncio.Queue = asyncio.Queue()
@@ -542,6 +632,11 @@ async def api_nuclei(req: NucleiRequest):
     if not targets:
         raise HTTPException(400, "No targets — enter a URL, paste a list, or tick "
                                  "'use loaded scan' with a scan that has live hosts.")
+    oos = scope.out_of_scope(targets)
+    if oos:
+        shown = ", ".join(oos[:5]) + ("…" if len(oos) > 5 else "")
+        raise HTTPException(400, f"{len(oos)} target(s) out of scope: {shown}. "
+                                 "Add them under Scope, or clear the list.")
 
     job_id = uuid.uuid4().hex[:12]
     queue: asyncio.Queue = asyncio.Queue()

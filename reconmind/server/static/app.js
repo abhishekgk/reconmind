@@ -2,6 +2,20 @@
 // ReconMind front-end. Plain vanilla JS, no build step — easy to read and hack on.
 
 const $ = (id) => document.getElementById(id);
+
+// ---------- auth (only active when the server requires it) ----------
+const _origFetch = window.fetch.bind(window);
+let AUTH_REQUIRED=false, ALLOW_REG=false, authMode="login", _appStarted=false;
+// Catch session-expiry 401s from any API call and pop the login overlay.
+window.fetch = async (...args) => {
+  const res = await _origFetch(...args);
+  try{
+    const url=(typeof args[0]==="string"?args[0]:(args[0]&&args[0].url))||"";
+    if(res.status===401 && url.includes("/api/") && !url.includes("/api/auth/")) showLogin("Your session expired — please sign in again.");
+  }catch(e){}
+  return res;
+};
+
 let currentScanId = null;
 let scanData = null;
 let elapsedTimer = null, startTs = null, pollTimer = null;
@@ -927,6 +941,74 @@ function renderNukeResults(){
   const ex=$("nkExport"); if(ex) ex.onclick=()=>dl(`nuclei_findings.txt`, NUKE.rows.map(r=>`[${r.severity}] ${r.template} ${r.url}`).join("\n"));
 }
 
+// ========================================================================
+// Auth + scope
+// ========================================================================
+async function initAuth(){
+  let s; try{ s=await (await _origFetch("/api/auth/status")).json(); }catch(e){ return true; }
+  AUTH_REQUIRED=!!s.auth_required; ALLOW_REG=!!s.allow_registration;
+  renderAuthBox(s);
+  if(s.auth_required && !s.authenticated){ authMode = ALLOW_REG?"register":"login"; showLogin(); return false; }
+  return true;
+}
+function renderAuthBox(s){
+  const box=$("authBox"); if(!box) return;
+  if(s && s.auth_required && s.authenticated && s.user){
+    box.innerHTML=`👤 <b>${esc(s.user)}</b> · <a href="#" id="logoutLink">logout</a>`;
+    const l=$("logoutLink"); if(l) l.onclick=(e)=>{ e.preventDefault(); logout(); };
+  } else box.innerHTML="";
+}
+function updateAuthModeUI(){
+  const reg=authMode==="register";
+  $("loginTitle").textContent = reg?"Create your ReconMind account":"Sign in to ReconMind";
+  $("loginSub").textContent = reg?"Set up the first account for this instance.":"This instance requires an account.";
+  $("authSubmit").textContent = reg?"Create account":"Sign in";
+  $("authToggle").textContent = reg?"Have an account? Sign in":"Create an account";
+  $("authToggle").style.display = ALLOW_REG ? "" : "none";
+  $("authPass").setAttribute("autocomplete", reg?"new-password":"current-password");
+}
+function showLogin(msg){
+  if(!AUTH_REQUIRED) return;
+  $("authErr").textContent=msg||""; updateAuthModeUI();
+  $("loginOverlay").classList.add("show");
+  const u=$("authUser"); if(u && !u.value) u.focus();
+}
+function toggleAuthMode(){ authMode = authMode==="register"?"login":"register"; $("authErr").textContent=""; updateAuthModeUI(); }
+async function doAuthSubmit(){
+  const u=$("authUser").value.trim(), p=$("authPass").value;
+  if(!u||!p){ $("authErr").textContent="Enter a username and password."; return; }
+  const ep = authMode==="register"?"/api/auth/register":"/api/auth/login";
+  $("authSubmit").disabled=true;
+  try{
+    let r=await _origFetch(ep,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});
+    let d=await r.json().catch(()=>({}));
+    if(!r.ok){ $("authErr").textContent=d.detail||"Failed."; $("authSubmit").disabled=false; return; }
+    if(authMode==="register"){
+      r=await _origFetch("/api/auth/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});
+      if(!r.ok){ authMode="login"; updateAuthModeUI(); $("authErr").textContent="Account created — please sign in."; $("authSubmit").disabled=false; return; }
+    }
+    $("authSubmit").disabled=false; $("authPass").value="";
+    $("loginOverlay").classList.remove("show");
+    await initAuth(); startApp();
+  }catch(e){ $("authErr").textContent="Network error."; $("authSubmit").disabled=false; }
+}
+async function logout(){ try{ await _origFetch("/api/auth/logout",{method:"POST"}); }catch(e){} location.reload(); }
+
+async function openScope(){
+  try{ const d=await (await fetch("/api/scope")).json(); $("scopeText").value=(d.in_scope||[]).join("\n"); }catch(e){ $("scopeText").value=""; }
+  $("scopeMsg").textContent=""; $("scopeOverlay").classList.add("show");
+}
+async function saveScope(){
+  const items=$("scopeText").value.split(/\n+/).map(s=>s.trim()).filter(Boolean);
+  try{ const d=await (await fetch("/api/scope",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({in_scope:items})})).json();
+    $("scopeText").value=(d.in_scope||[]).join("\n"); $("scopeMsg").textContent=`Saved — ${(d.in_scope||[]).length} host(s) in scope`+((d.in_scope||[]).length?".":" (unrestricted).");
+  }catch(e){ $("scopeMsg").textContent="Save failed."; }
+}
+
+// ---------- boot ----------
+function startApp(){ if(_appStarted) return; _appStarted=true; loadTools(); loadLlm(); loadModels(); setInterval(loadLlm,15000); }
+async function boot(){ if(await initAuth()) startApp(); }
+
 // ---------- wire up ----------
 $("scanBtn").onclick=startScan;
 $("domain").addEventListener("keydown",e=>{if(e.key==="Enter")startScan();});
@@ -953,4 +1035,9 @@ $("diffOverlay").onclick=(e)=>{ if(e.target===$("diffOverlay")) $("diffOverlay")
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); t.classList.add("active"); activeTab=t.dataset.tab; try{history.replaceState(null,"","#"+activeTab);}catch(e){} render(); });
 // Deep-link / bookmark a tab via the URL hash (e.g. …/#fuzzer opens the Fuzzer).
 (function initTabFromHash(){ const h=(location.hash||"").slice(1); const el=h&&document.querySelector('.tab[data-tab="'+h+'"]'); if(el){ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); el.classList.add("active"); activeTab=h; render(); } })();
-loadTools(); loadLlm(); loadModels(); setInterval(loadLlm,15000);
+$("scopeBtn").onclick=openScope; $("scopeClose").onclick=()=>$("scopeOverlay").classList.remove("show"); $("scopeSave").onclick=saveScope;
+$("scopeOverlay").onclick=(e)=>{ if(e.target===$("scopeOverlay")) $("scopeOverlay").classList.remove("show"); };
+$("authSubmit").onclick=doAuthSubmit; $("authToggle").onclick=toggleAuthMode;
+$("authUser").addEventListener("keydown",e=>{ if(e.key==="Enter") $("authPass").focus(); });
+$("authPass").addEventListener("keydown",e=>{ if(e.key==="Enter") doAuthSubmit(); });
+boot();

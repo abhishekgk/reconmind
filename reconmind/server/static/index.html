@@ -187,7 +187,9 @@
     <select id="modelSelect" class="modelsel" title="choose which LLM answers — Claude models (needs a key) or any local Ollama model"></select>
     <button class="ghost" id="importBtn">⬆ Import</button>
     <button class="ghost" id="historyBtn">🕘 History</button>
+    <button class="ghost" id="scopeBtn" title="scope allow-list — restrict which targets can be scanned">🎯 Scope</button>
     <button class="ghost" id="keysBtn">⚙ API keys</button>
+    <span id="authBox" class="sub"></span>
     <input type="file" id="importFile" accept="application/json,.json" style="display:none">
   </span>
 </header>
@@ -310,6 +312,41 @@
   </div>
 </div>
 
+<!-- Login / register overlay (only shown when the server requires auth) -->
+<div class="overlay" id="loginOverlay">
+  <div class="modal" style="max-width:380px">
+    <h2 id="loginTitle">Sign in to ReconMind</h2>
+    <p class="muted" id="loginSub">This instance requires an account.</p>
+    <div class="kfields" style="flex-direction:column;gap:10px">
+      <input type="text" id="authUser" placeholder="username" autocomplete="username">
+      <input type="password" id="authPass" placeholder="password" autocomplete="current-password">
+    </div>
+    <div id="authErr" style="color:var(--bad);font-size:12px;min-height:16px;margin-top:8px"></div>
+    <div class="modalbtns">
+      <button class="ghost" id="authToggle" style="margin-right:auto"></button>
+      <button id="authSubmit">Sign in</button>
+    </div>
+  </div>
+</div>
+
+<!-- Scope allow-list overlay -->
+<div class="overlay" id="scopeOverlay">
+  <div class="modal">
+    <h2>Scope allow-list</h2>
+    <p class="muted">One host per line — e.g. <code>example.com</code> matches it and every
+      subdomain. While this list is non-empty, recon / Fuzzer / Nuclei <b>refuse out-of-scope
+      targets</b>. Leave it empty to allow any target (default).</p>
+    <textarea id="scopeText" placeholder="example.com&#10;target.io" style="width:100%;min-height:150px;
+      background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;
+      padding:10px 12px;font-family:var(--mono);font-size:13px"></textarea>
+    <div class="muted" id="scopeMsg" style="min-height:16px;margin-top:6px"></div>
+    <div class="modalbtns">
+      <button class="ghost" id="scopeClose">Close</button>
+      <button id="scopeSave">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Screenshot lightbox -->
 <div class="lightbox" id="lightbox"><img id="lightboxImg" src="" alt=""></div>
 
@@ -343,6 +380,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=15"></script>
+<script src="/static/app.js?v=16"></script>
 </body>
 </html>
