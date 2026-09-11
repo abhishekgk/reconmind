@@ -25,6 +25,7 @@ from pathlib import Path
 from . import config
 
 AUTH_FILE = config.DATA_DIR.parent / "auth.json"     # ~/.reconmind/auth.json (0600)
+SETTINGS_FILE = config.DATA_DIR.parent / "settings.json"
 SESSION_TTL = 7 * 24 * 3600                            # 7 days
 COOKIE = "reconmind_session"
 
@@ -37,9 +38,31 @@ def _truthy(v: str) -> bool:
     return v.lower() in ("1", "true", "yes", "on")
 
 
+def _settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def enabled() -> bool:
-    """Auth is active only when RECONMIND_AUTH is set truthy."""
-    return _truthy(os.environ.get("RECONMIND_AUTH", ""))
+    """Auth is active when RECONMIND_AUTH is truthy OR it's been turned on and
+    persisted in settings.json (so it survives restarts without the env var).
+    An explicit RECONMIND_AUTH=0 wins, to allow a one-off local override."""
+    env = os.environ.get("RECONMIND_AUTH", "")
+    if env:
+        return _truthy(env)
+    return bool(_settings().get("auth"))
+
+
+def set_enabled(on: bool) -> None:
+    """Persist the auth on/off choice into settings.json (preserving other keys)."""
+    s = _settings()
+    s["auth"] = bool(on)
+    try:
+        SETTINGS_FILE.write_text(json.dumps(s, indent=2))
+    except OSError:
+        pass
 
 
 def cookie_secure() -> bool:
