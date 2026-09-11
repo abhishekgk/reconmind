@@ -159,6 +159,21 @@ class NucleiRequest(BaseModel):
     deadline: int = 900
 
 
+class EnumerateRequest(BaseModel):
+    """Multi-host enumeration (the ⚡ Enumerate panel)."""
+    scan_id: str | None = None
+    hosts: list[str] = []                 # live-host URLs selected in the UI
+    capabilities: dict = {}               # {"dir_brute": bool, "params": bool}
+    wordlist: str = ""
+    tool: str = "ffuf"
+    extensions: str = ""
+    filter_codes: str = "404"
+    threads: int = 40
+    rps: int = 0
+    per_host_deadline: int = 120
+    host_concurrency: int = 3
+
+
 # In-memory crawl jobs (id -> {queue, status}). A crawl runs against an already
 # loaded scan (live, imported, or from history) and fills its Endpoints tab.
 CRAWL_JOBS: dict[str, dict] = {}
@@ -169,6 +184,9 @@ FUZZ_JOBS: dict[str, dict] = {}
 
 # In-memory nuclei jobs (id -> {queue, status, findings}).
 NUCLEI_JOBS: dict[str, dict] = {}
+
+# In-memory enumerate jobs (id -> {queue, status, content, params}).
+ENUM_JOBS: dict[str, dict] = {}
 
 # Monitors currently mid-run, so the scheduler never double-launches one.
 _MON_RUNNING: set[str] = set()
@@ -778,6 +796,87 @@ async def api_nuclei_events(job_id: str):
     job = NUCLEI_JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "nuclei job not found")
+    queue = job["queue"]
+
+    async def stream():
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=30)
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+                if job["status"] == "done":
+                    break
+                continue
+            yield f"data: {json.dumps(event)}\n\n"
+            if event["kind"] in ("done", "error"):
+                break
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.post("/api/enumerate")
+async def api_enumerate(req: EnumerateRequest):
+    """Run directory brute-force across many hosts (+ optional arjun params);
+    results stream over SSE and are saved into the scan's Findings."""
+    hosts = [h for h in req.hosts if h]
+    if not hosts:
+        raise HTTPException(400, "Select at least one host to enumerate.")
+    caps = req.capabilities or {}
+    if caps.get("dir_brute") and not req.wordlist:
+        raise HTTPException(400, "Pick a wordlist for directory brute-force.")
+    oos = scope.out_of_scope(hosts)
+    if oos:
+        shown = ", ".join(oos[:5]) + ("…" if len(oos) > 5 else "")
+        raise HTTPException(400, f"{len(oos)} host(s) out of scope: {shown}.")
+
+    # For param discovery, prefer the loaded scan's param-less endpoints.
+    param_urls = []
+    if caps.get("params") and req.scan_id and req.scan_id in SCANS:
+        data = SCANS[req.scan_id].to_dict()
+        param_urls = [e["url"] for e in data.get("endpoints", [])
+                      if e.get("url") and not e.get("params")][:300]
+
+    job_id = uuid.uuid4().hex[:12]
+    queue: asyncio.Queue = asyncio.Queue()
+    ENUM_JOBS[job_id] = {"queue": queue, "status": "running"}
+    opts = req.model_dump()
+    opts["hosts"] = hosts
+    opts["param_urls"] = param_urls
+
+    async def _run():
+        try:
+            def on_result(bucket, row):
+                queue.put_nowait({"kind": "result", "bucket": bucket, "row": row})
+
+            def on_progress(msg):
+                queue.put_nowait({"kind": "phase", "phase": msg})
+
+            res = await fuzzer.run_enumerate(opts, on_result=on_result,
+                                             on_progress=on_progress)
+            saved = False
+            if req.scan_id:
+                if res.get("content"):
+                    saved = _attach_findings(req.scan_id, "fuzz", res["content"]) or saved
+                if res.get("params"):
+                    saved = _attach_findings(req.scan_id, "params", res["params"]) or saved
+            queue.put_nowait({"kind": "done", "content": len(res.get("content", [])),
+                              "params": len(res.get("params", [])), "saved": saved})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            queue.put_nowait({"kind": "error", "message": str(e)})
+        finally:
+            ENUM_JOBS[job_id]["status"] = "done"
+
+    _spawn(_run())
+    return {"job_id": job_id, "hosts": len(hosts)}
+
+
+@app.get("/api/enumerate/{job_id}/events")
+async def api_enumerate_events(job_id: str):
+    job = ENUM_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "enumerate job not found")
     queue = job["queue"]
 
     async def stream():

@@ -313,7 +313,7 @@ function renderFacets(){
     const all=findingRows();
     if(!all.length){ f.innerHTML=""; return; }
     const n=(t)=>all.filter(r=>r._t===t).length;
-    f.innerHTML = ["nuclei","exposure","fuzz"].map(t=>n(t)?chip("ft:"+t,`${t} <b>${n(t)}</b>`,facet.findType.has(t)):"").join("");
+    f.innerHTML = ["nuclei","exposure","fuzz","param"].map(t=>n(t)?chip("ft:"+t,`${t} <b>${n(t)}</b>`,facet.findType.has(t)):"").join("");
   } else { f.innerHTML=""; return; }
   f.querySelectorAll("[data-facet]").forEach(el=>el.onclick=()=>{
     const id=el.dataset.facet;
@@ -466,6 +466,7 @@ function findingRows(){
   (f.nuclei||[]).forEach(n=>rows.push({_t:"nuclei",severity:(n.severity||"unknown"),label:n.template||"",name:n.name||"",url:n.url||"",tags:n.tags||[],extra:n.matcher||""}));
   (f.exposures||[]).forEach(e=>rows.push({_t:"exposure",severity:(e.severity||"info"),label:e.type||"",name:e.type||"",url:e.url||"",tags:[],extra:e.evidence||""}));
   (f.fuzz||[]).forEach(x=>rows.push({_t:"fuzz",severity:"info",label:(x.status!=null?String(x.status):""),name:x.path||x.url||"",url:x.url||"",tags:[],extra:(x.size!=null?fzHuman(x.size):"")+(x.source?(" · "+x.source):"")}));
+  (f.params||[]).forEach(x=>rows.push({_t:"param",severity:"info",label:x.method||"GET",name:"params: "+((x.params||[]).join(", ")),url:x.url||"",tags:x.params||[],extra:x.source||"arjun"}));
   return rows;
 }
 function renderFindings(){
@@ -1070,6 +1071,45 @@ async function addMonitor(){
   $("monDomain").value=""; renderMonitors();
 }
 
+// ---------- multi-host Enumerate ----------
+async function openEnumerate(){
+  const live=(scanData&&scanData.hosts?scanData.hosts.filter(h=>h.live&&h.url):[]);
+  $("enumNeedScan").hidden = live.length>0;
+  $("enumBody").style.display = live.length? "":"none";
+  $("enumStart").disabled = !live.length;
+  $("enumCount").textContent=`(${live.length})`;
+  $("enumHosts").innerHTML = live.length ? live.map(h=>`<label class="chk" style="display:flex;gap:6px;align-items:center"><input type="checkbox" class="enh" data-url="${esc(h.url)}" data-x2="${h.status&&h.status<300?1:0}" ${h.status&&h.status<300?"checked":""}> <span class="mono">${esc(h.host)}</span> ${h.status?`<span class="st ${statusClass(h.status)}">${h.status}</span>`:""}</label>`).join("") : `<span class="muted">no live hosts</span>`;
+  await loadFuzzMeta();
+  const wsel=$("enWordlist"); if(wsel&&FUZZ_META.wordlists){ const groups={}; FUZZ_META.wordlists.forEach(w=>{(groups[w.group]=groups[w.group]||[]).push(w);}); wsel.innerHTML=`<option value="">— choose a wordlist —</option>`+Object.entries(groups).map(([g,ws])=>`<optgroup label="${esc(g)}">`+ws.map(w=>`<option value="${esc(w.path)}">${esc(w.name)} · ${w.lines>=0?w.lines.toLocaleString()+" lines":w.human}</option>`).join("")+`</optgroup>`).join(""); }
+  const tsel=$("enTool"); if(tsel&&FUZZ_META.tools){ tsel.innerHTML=(FUZZ_META.tools.tools||[]).map(t=>`<option value="${esc(t.name)}" ${t.available?"":"disabled"}>${esc(t.name)}${t.available?"":" — not installed"}</option>`).join(""); tsel.value=(FUZZ_META.tools.default||"ffuf"); }
+  $("enumPhase").textContent="";
+  $("enumOverlay").classList.add("show");
+}
+function enumSelected(){ return Array.from(document.querySelectorAll(".enh:checked")).map(c=>c.dataset.url); }
+function resetEnumBtn(){ $("enumStart").disabled=false; $("enumStart").textContent="▶ Enumerate"; }
+async function startEnumerate(){
+  const hosts=enumSelected();
+  if(!hosts.length){ $("enumPhase").textContent="⚠ select at least one host"; return; }
+  const caps={dir_brute:$("enDir").checked, params:$("enParams").checked};
+  if(!caps.dir_brute && !caps.params){ $("enumPhase").textContent="⚠ enable at least one capability"; return; }
+  if(caps.dir_brute && !$("enWordlist").value){ $("enumPhase").textContent="⚠ pick a wordlist for directory brute-force"; return; }
+  const body={ scan_id:currentScanId, hosts, capabilities:caps, wordlist:$("enWordlist").value, tool:$("enTool").value,
+    extensions:$("enExt").value, threads:parseInt($("enThreads").value)||40,
+    host_concurrency:parseInt($("enConc").value)||3, per_host_deadline:parseInt($("enDeadline").value)||120 };
+  $("enumStart").disabled=true; $("enumStart").textContent="running…"; $("enumPhase").textContent="▸ starting…";
+  const counts={content:0,params:0};
+  let r; try{ r=await (await fetch("/api/enumerate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json(); }catch(e){ $("enumPhase").textContent="⚠ failed to start"; resetEnumBtn(); return; }
+  if(!r.job_id){ $("enumPhase").textContent="⚠ "+(r.detail||"failed to start"); resetEnumBtn(); return; }
+  const es=new EventSource(`/api/enumerate/${r.job_id}/events`);
+  es.onmessage=(e)=>{ const ev=JSON.parse(e.data);
+    if(ev.kind==="phase") $("enumPhase").textContent="▸ "+ev.phase;
+    else if(ev.kind==="result"){ if(ev.bucket==="content")counts.content++; else counts.params++; }
+    else if(ev.kind==="done"){ es.close(); resetEnumBtn(); $("enumPhase").textContent=`✓ done — ${ev.content} content hit(s), ${ev.params} param finding(s)${ev.saved?" · saved to Findings":""}`; if(ev.saved) refreshFindings(); }
+    else if(ev.kind==="error"){ es.close(); resetEnumBtn(); $("enumPhase").textContent="⚠ "+(ev.message||"error"); }
+  };
+  es.onerror=()=>{ es.close(); resetEnumBtn(); if(!$("enumPhase").textContent.startsWith("✓")) $("enumPhase").textContent="▸ stream ended"; };
+}
+
 // ---------- boot ----------
 function startApp(){ if(_appStarted) return; _appStarted=true; loadTools(); loadLlm(); loadModels(); setInterval(loadLlm,15000); setInterval(()=>{ if($("monitorOverlay").classList.contains("show")) renderMonitors(); }, 5000); }
 async function boot(){ if(await initAuth()) startApp(); }
@@ -1100,6 +1140,11 @@ $("diffOverlay").onclick=(e)=>{ if(e.target===$("diffOverlay")) $("diffOverlay")
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); t.classList.add("active"); activeTab=t.dataset.tab; try{history.replaceState(null,"","#"+activeTab);}catch(e){} render(); });
 // Deep-link / bookmark a tab via the URL hash (e.g. …/#fuzzer opens the Fuzzer).
 (function initTabFromHash(){ const h=(location.hash||"").slice(1); const el=h&&document.querySelector('.tab[data-tab="'+h+'"]'); if(el){ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); el.classList.add("active"); activeTab=h; render(); } })();
+$("enumBtn").onclick=openEnumerate; $("enumClose").onclick=()=>$("enumOverlay").classList.remove("show"); $("enumStart").onclick=startEnumerate;
+$("enumOverlay").onclick=(e)=>{ if(e.target===$("enumOverlay")) $("enumOverlay").classList.remove("show"); };
+$("enumSelAll").onclick=(e)=>{ e.preventDefault(); document.querySelectorAll(".enh").forEach(c=>c.checked=true); };
+$("enumSel2xx").onclick=(e)=>{ e.preventDefault(); document.querySelectorAll(".enh").forEach(c=>c.checked=c.dataset.x2==="1"); };
+$("enumSelNone").onclick=(e)=>{ e.preventDefault(); document.querySelectorAll(".enh").forEach(c=>c.checked=false); };
 $("monitorBtn").onclick=openMonitor; $("monClose").onclick=()=>$("monitorOverlay").classList.remove("show"); $("monAdd").onclick=addMonitor;
 $("monDomain").addEventListener("keydown",e=>{ if(e.key==="Enter") addMonitor(); });
 $("monitorOverlay").onclick=(e)=>{ if(e.target===$("monitorOverlay")) $("monitorOverlay").classList.remove("show"); };

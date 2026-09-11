@@ -22,8 +22,10 @@ Design notes (matching the rest of ReconMind):
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
+import tempfile
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -714,3 +716,115 @@ async def quick_wins(bases: list[str], on_result=None, on_progress=None,
     sev_rank = {"high": 0, "medium": 1, "low": 2, "info": 3}
     found.sort(key=lambda r: (sev_rank.get(r["severity"], 4), r["host"], r["path"]))
     return found
+
+
+# ---------------------------------------------------------------------------
+# Multi-host enumeration — directory brute across many hosts + param discovery
+# ---------------------------------------------------------------------------
+
+def _host_of(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or url).lower()
+    except ValueError:
+        return url
+
+
+async def param_discover(urls: list[str], on_result=None, on_progress=None,
+                         deadline: float = 240) -> list[dict]:
+    """Find hidden HTTP parameters with arjun. Returns rows
+    {url, params:[...], method, source}. Degrades to [] if arjun is missing."""
+    on_result = on_result or (lambda r: None)
+    on_progress = on_progress or (lambda m: None)
+    urls = [u for u in (urls or []) if u][:300]
+    if not urls:
+        return []
+    if not config.tool_path("arjun"):
+        on_progress("arjun not installed — skipping param discovery "
+                    "(pip install arjun)")
+        return []
+    on_progress(f"arjun: hunting hidden params on {len(urls)} URL(s)")
+    infile = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
+    infile.write("\n".join(urls))
+    infile.close()
+    out = tempfile.NamedTemporaryFile("r", suffix=".json", delete=False)
+    out.close()
+    from .runners import _run
+    await _run(["arjun", "-i", infile.name, "-oJ", out.name, "-q", "-t", "10"],
+               timeout=int(deadline))
+    try:
+        data = json.loads(Path(out.name).read_text())
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    finally:
+        Path(infile.name).unlink(missing_ok=True)
+        Path(out.name).unlink(missing_ok=True)
+
+    rows: list[dict] = []
+
+    def _emit(url, info):
+        if isinstance(info, dict):
+            params = info.get("params") or info.get("parameters") or []
+            method = info.get("method") or "GET"
+        elif isinstance(info, list):
+            params, method = info, "GET"
+        else:
+            return
+        if params:
+            row = {"url": url, "params": params, "method": method, "source": "arjun"}
+            rows.append(row)
+            on_result(row)
+
+    if isinstance(data, dict):
+        for url, info in data.items():
+            _emit(url, info)
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict) and item.get("url"):
+                _emit(item["url"], item)
+    return rows
+
+
+async def run_enumerate(opts: dict, on_result=None, on_progress=None) -> dict:
+    """Run enumeration across many hosts at once.
+
+    opts: hosts (list of URLs), capabilities {dir_brute, params}, wordlist, tool,
+    extensions, filter_codes, threads, rps, per_host_deadline, host_concurrency,
+    param_urls. ``on_result(bucket, row)`` fires per hit; ``on_progress(msg)``.
+    Returns {content:[...], params:[...]}.
+    """
+    on_result = on_result or (lambda b, r: None)
+    on_progress = on_progress or (lambda m: None)
+    hosts = [h for h in (opts.get("hosts") or []) if h]
+    caps = opts.get("capabilities") or {}
+    out = {"content": [], "params": []}
+
+    if caps.get("dir_brute") and hosts:
+        sem = asyncio.Semaphore(int(opts.get("host_concurrency") or 3))
+        done = [0]
+
+        async def one(h):
+            async with sem:
+                on_progress(f"[{done[0]+1}/{len(hosts)}] dir-brute → {h}")
+                host = _host_of(h)
+                fo = {"url": h, "tool": opts.get("tool", "ffuf"),
+                      "wordlist": opts.get("wordlist", ""),
+                      "extensions": opts.get("extensions", ""),
+                      "filter_codes": opts.get("filter_codes", "404"),
+                      "threads": int(opts.get("threads") or 40),
+                      "rps": int(opts.get("rps") or 0),
+                      "deadline": int(opts.get("per_host_deadline") or 120),
+                      "method": "GET"}
+                await run_fuzz(fo, on_result=lambda r: (
+                    out["content"].append(dict(r, host=host)),
+                    on_result("content", dict(r, host=host))), on_progress=lambda m: None)
+                done[0] += 1
+
+        await asyncio.gather(*(one(h) for h in hosts))
+        on_progress(f"dir-brute done — {len(out['content'])} hit(s) across {len(hosts)} host(s)")
+
+    if caps.get("params"):
+        out["params"] = await param_discover(
+            opts.get("param_urls") or hosts,
+            on_result=lambda r: on_result("params", r), on_progress=on_progress)
+
+    return out

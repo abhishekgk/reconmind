@@ -187,6 +187,7 @@
     <select id="modelSelect" class="modelsel" title="choose which LLM answers — Claude models (needs a key) or any local Ollama model"></select>
     <button class="ghost" id="importBtn">⬆ Import</button>
     <button class="ghost" id="historyBtn">🕘 History</button>
+    <button class="ghost" id="enumBtn" title="run content discovery across many live hosts at once">⚡ Enumerate</button>
     <button class="ghost" id="monitorBtn" title="scheduled re-scans + change alerts">📡 Monitor</button>
     <button class="ghost" id="scopeBtn" title="scope allow-list — restrict which targets can be scanned">🎯 Scope</button>
     <button class="ghost" id="keysBtn">⚙ API keys</button>
@@ -313,6 +314,43 @@
   </div>
 </div>
 
+<!-- Enumerate overlay -->
+<div class="overlay" id="enumOverlay">
+  <div class="modal" style="max-width:800px">
+    <h2>⚡ Enumerate</h2>
+    <p class="muted">Content discovery across many live hosts at once — directory brute-forces every
+      selected host and (optionally) hunts hidden parameters with arjun. Results are saved into
+      <b>Findings</b>.</p>
+    <div id="enumNeedScan" class="muted" hidden>Run, load, or import a scan first — Enumerate works on its live hosts.</div>
+    <div id="enumBody">
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px">
+          <div class="small">hosts <span id="enumCount"></span> —
+            <a href="#" id="enumSelAll">all</a> · <a href="#" id="enumSel2xx">2xx</a> · <a href="#" id="enumSelNone">none</a></div>
+          <div id="enumHosts" style="max-height:250px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-top:6px;font-size:12px"></div>
+        </div>
+        <div style="width:300px">
+          <label class="chk"><input type="checkbox" id="enDir" checked> Directory brute-force</label>
+          <label class="fl" style="margin-top:6px;display:block">wordlist<select id="enWordlist" class="modelsel" style="width:100%;max-width:none"></select></label>
+          <label class="fl" style="margin-top:6px;display:block">tool<select id="enTool" class="modelsel" style="width:100%;max-width:none"></select></label>
+          <label class="fl" style="margin-top:6px;display:block">extensions<input type="text" id="enExt" placeholder="php,txt,bak" style="width:100%"></label>
+          <label class="chk" style="margin-top:12px"><input type="checkbox" id="enParams"> Param discovery (arjun)</label>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+            <label class="fl">threads<input type="text" id="enThreads" value="40" style="width:64px"></label>
+            <label class="fl">hosts at once<input type="text" id="enConc" value="3" style="width:64px"></label>
+            <label class="fl">per-host max s<input type="text" id="enDeadline" value="120" style="width:64px"></label>
+          </div>
+        </div>
+      </div>
+      <div class="phase" id="enumPhase" style="margin-top:10px"></div>
+    </div>
+    <div class="modalbtns">
+      <button class="ghost" id="enumClose">Close</button>
+      <button id="enumStart" class="warn" style="background:var(--warn);color:#241a00">▶ Enumerate</button>
+    </div>
+  </div>
+</div>
+
 <!-- Monitoring overlay -->
 <div class="overlay" id="monitorOverlay">
   <div class="modal" style="max-width:760px">
@@ -401,6 +439,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=18"></script>
+<script src="/static/app.js?v=19"></script>
 </body>
 </html>
