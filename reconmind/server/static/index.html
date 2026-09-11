@@ -240,7 +240,8 @@
     <div class="filterbar" id="filterbar">
       <label class="chk" id="liveWrap"><input type="checkbox" id="onlyLive"> live only</label>
       <label class="chk" id="paramsWrap" style="display:none"><input type="checkbox" id="onlyParams"> with params</label>
-      <input id="filter" type="text" placeholder="filter…" style="min-width:140px;flex:0 1 240px">
+      <input id="filter" type="text" placeholder="filter (keep)…" style="min-width:120px;flex:0 1 200px">
+      <input id="exclude" type="text" placeholder="exclude a,b,c…" style="min-width:120px;flex:0 1 200px" title="hide rows containing ANY of these comma-separated terms">
       <span class="muted" id="showing"></span>
       <div style="display:flex;gap:6px;margin-left:auto">
         <button class="ghost sm" id="crawlBtn" title="crawl the loaded scan's live hosts + parse JS for endpoints">⛏ Crawl</button>
@@ -335,6 +336,7 @@
           <label class="fl" style="margin-top:6px;display:block">tool<select id="enTool" class="modelsel" style="width:100%;max-width:none"></select></label>
           <label class="fl" style="margin-top:6px;display:block">extensions<input type="text" id="enExt" placeholder="php,txt,bak" style="width:100%"></label>
           <label class="chk" style="margin-top:12px"><input type="checkbox" id="enParams"> Param discovery (arjun)</label>
+          <label class="chk" style="margin-top:8px"><input type="checkbox" id="enVhost"> Vhost enum <span class="small">(Host-header — pick a subdomain wordlist above)</span></label>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
             <label class="fl">threads<input type="text" id="enThreads" value="40" style="width:64px"></label>
             <label class="fl">hosts at once<input type="text" id="enConc" value="3" style="width:64px"></label>
@@ -439,6 +441,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=19"></script>
+<script src="/static/app.js?v=20"></script>
 </body>
 </html>

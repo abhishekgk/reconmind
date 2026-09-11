@@ -784,6 +784,49 @@ async def param_discover(urls: list[str], on_result=None, on_progress=None,
     return rows
 
 
+async def vhost_enum(target_url: str, base_domain: str, wordlist: str,
+                     on_result=None, on_progress=None, deadline: float = 120,
+                     threads: int = 40) -> list[dict]:
+    """Find virtual hosts by fuzzing the Host header against one target with ffuf.
+
+    Surfaces internal/staging sites (``FUZZ.<base_domain>``) served by the same
+    box but not in DNS. ffuf's -ac auto-calibration filters the default page so a
+    catch-all vhost doesn't produce noise. Returns rows {vhost, host, status,
+    size, source}."""
+    on_result = on_result or (lambda r: None)
+    on_progress = on_progress or (lambda m: None)
+    if not config.tool_path("ffuf"):
+        on_progress("ffuf not installed — skipping vhost enum")
+        return []
+    if not _allowed_wordlist(wordlist):
+        on_progress("vhost enum: pick a wordlist (a subdomain list works best)")
+        return []
+    t = target_url.strip()
+    if not re.match(r"^https?://", t, re.I):
+        t = "http://" + t
+    host = _host_of(t)
+    on_progress(f"vhost enum → {host}  (Host: FUZZ.{base_domain})")
+    rows: list[dict] = []
+    count = [0]
+
+    def on_line(line: str):
+        m = _FFUF_RE.match(_ANSI_RE.sub("", line).strip())
+        if not m or count[0] >= 1000:
+            return
+        count[0] += 1
+        row = {"vhost": f"{m.group('word')}.{base_domain}", "host": host,
+               "status": int(m.group("st")), "size": int(m.group("sz")),
+               "source": "vhost"}
+        rows.append(row)
+        on_result(row)
+
+    cmd = ["ffuf", "-u", t, "-H", f"Host: FUZZ.{base_domain}", "-w", wordlist,
+           "-ac", "-t", str(threads), "-maxtime", str(int(deadline)),
+           "-mc", "all", "-fc", "404"]
+    await _stream(cmd, deadline + 15, on_line)
+    return rows
+
+
 async def run_enumerate(opts: dict, on_result=None, on_progress=None) -> dict:
     """Run enumeration across many hosts at once.
 
@@ -796,7 +839,7 @@ async def run_enumerate(opts: dict, on_result=None, on_progress=None) -> dict:
     on_progress = on_progress or (lambda m: None)
     hosts = [h for h in (opts.get("hosts") or []) if h]
     caps = opts.get("capabilities") or {}
-    out = {"content": [], "params": []}
+    out = {"content": [], "params": [], "vhosts": []}
 
     if caps.get("dir_brute") and hosts:
         sem = asyncio.Semaphore(int(opts.get("host_concurrency") or 3))
@@ -826,5 +869,21 @@ async def run_enumerate(opts: dict, on_result=None, on_progress=None) -> dict:
         out["params"] = await param_discover(
             opts.get("param_urls") or hosts,
             on_result=lambda r: on_result("params", r), on_progress=on_progress)
+
+    if caps.get("vhosts") and hosts and opts.get("base_domain"):
+        base = opts["base_domain"]
+        wl = opts.get("vhost_wordlist") or opts.get("wordlist", "")
+        sem = asyncio.Semaphore(int(opts.get("host_concurrency") or 3))
+
+        async def vh(h):
+            async with sem:
+                rows = await vhost_enum(
+                    h, base, wl, on_result=lambda r: on_result("vhost", r),
+                    on_progress=on_progress,
+                    deadline=int(opts.get("per_host_deadline") or 120),
+                    threads=int(opts.get("threads") or 40))
+                out["vhosts"].extend(rows)
+
+        await asyncio.gather(*(vh(h) for h in hosts))
 
     return out

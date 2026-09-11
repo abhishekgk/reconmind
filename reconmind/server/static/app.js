@@ -279,6 +279,10 @@ function render(){
 function filterText(){ return $("filter").value.trim().toLowerCase(); }
 function renderTable(tab, cols, rows, total, cap){
   const st=SORT[tab];
+  // Global negative filter (comma-separated): hide rows matching any term.
+  const exq=(($("exclude")&&$("exclude").value)||"").trim();
+  if(exq){ const terms=exq.split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
+    if(terms.length) rows=rows.filter(r=>{ const blob=cols.map(c=>c.val?String(c.val(r)):"").join(" ").toLowerCase(); return !terms.some(t=>blob.includes(t)); }); }
   if(!cols.find(c=>c.key===st.k && !c.nosort)){ const f=cols.find(c=>!c.nosort); st.k=f?f.key:cols[0].key; }
   const col=cols.find(c=>c.key===st.k)||cols[0];
   const sorted=rows.slice().sort((x,y)=>{ let a=col.val(x),b=col.val(y); if(a==null)a="";if(b==null)b="";
@@ -313,7 +317,7 @@ function renderFacets(){
     const all=findingRows();
     if(!all.length){ f.innerHTML=""; return; }
     const n=(t)=>all.filter(r=>r._t===t).length;
-    f.innerHTML = ["nuclei","exposure","fuzz","param"].map(t=>n(t)?chip("ft:"+t,`${t} <b>${n(t)}</b>`,facet.findType.has(t)):"").join("");
+    f.innerHTML = ["nuclei","exposure","fuzz","param","vhost"].map(t=>n(t)?chip("ft:"+t,`${t} <b>${n(t)}</b>`,facet.findType.has(t)):"").join("");
   } else { f.innerHTML=""; return; }
   f.querySelectorAll("[data-facet]").forEach(el=>el.onclick=()=>{
     const id=el.dataset.facet;
@@ -467,6 +471,7 @@ function findingRows(){
   (f.exposures||[]).forEach(e=>rows.push({_t:"exposure",severity:(e.severity||"info"),label:e.type||"",name:e.type||"",url:e.url||"",tags:[],extra:e.evidence||""}));
   (f.fuzz||[]).forEach(x=>rows.push({_t:"fuzz",severity:"info",label:(x.status!=null?String(x.status):""),name:x.path||x.url||"",url:x.url||"",tags:[],extra:(x.size!=null?fzHuman(x.size):"")+(x.source?(" · "+x.source):"")}));
   (f.params||[]).forEach(x=>rows.push({_t:"param",severity:"info",label:x.method||"GET",name:"params: "+((x.params||[]).join(", ")),url:x.url||"",tags:x.params||[],extra:x.source||"arjun"}));
+  (f.vhost||[]).forEach(x=>rows.push({_t:"vhost",severity:"info",label:String(x.status||""),name:x.vhost||"",url:"",tags:[],extra:`on ${x.host||"?"}${x.size!=null?" · "+fzHuman(x.size):""}`}));
   return rows;
 }
 function renderFindings(){
@@ -630,7 +635,15 @@ let FUZZ = {
   filter_codes:"404", threads:40, rps:0, recursion:0, quick_wins:false, data:"",
   headers:[{name:"",value:""}], rows:[], exposures:[], running:false,
   jobId:null, es:null, filter:"", statusFacet:new Set(),
+  regex:false, hideSize:null, minWords:null, exclude:"",
 };
+function refocusEl(id){ const n=$(id); if(n){ n.focus(); try{ n.setSelectionRange(n.value.length,n.value.length); }catch(e){} } }
+// Comma-separated negative filter: returns rows that DON'T contain any term.
+function applyExclude(rows, ex, fields){
+  const terms=(ex||"").split(",").map(s=>s.trim().toLowerCase()).filter(Boolean);
+  if(!terms.length) return rows;
+  return rows.filter(r=>{ const blob=fields.map(f=>String(r[f]||"")).join(" ").toLowerCase(); return !terms.some(t=>blob.includes(t)); });
+}
 let FUZZ_META = { wordlists:null, tools:null };
 const FZ_INTERESTING = /(admin|backup|\.bak|\.old|\.sql|\.zip|\.tar|\.git|\.env|config|secret|token|api|graphql|upload|debug|test|internal|private|swagger|actuator|\.json|\.xml|password|\.log)/i;
 
@@ -790,12 +803,21 @@ function renderFuzzResults(){
   const total=FUZZ.rows.length;
   let rows=FUZZ.rows.slice();
   if(FUZZ.statusFacet.size) rows=rows.filter(r=>FUZZ.statusFacet.has(statusBucket(r.status)));
-  const f=(FUZZ.filter||"").toLowerCase(); if(f) rows=rows.filter(r=>(r.url||"").toLowerCase().includes(f)||(r.path||"").toLowerCase().includes(f));
+  const f=(FUZZ.filter||"");
+  if(f){ if(FUZZ.regex){ let re=null; try{ re=new RegExp(f,"i"); }catch(e){} if(re) rows=rows.filter(r=>re.test(r.url||"")||re.test(r.path||"")); }
+         else { const lf=f.toLowerCase(); rows=rows.filter(r=>(r.url||"").toLowerCase().includes(lf)||(r.path||"").toLowerCase().includes(lf)); } }
+  rows=applyExclude(rows, FUZZ.exclude, ["url","path"]);
+  if(FUZZ.hideSize!=null) rows=rows.filter(r=>r.size!==FUZZ.hideSize);
+  if(FUZZ.minWords!=null) rows=rows.filter(r=>(r.words||0)>=FUZZ.minWords);
   const buckets=["2xx","3xx","4xx","5xx"];
   const facetChips=buckets.map(b=>`<span class="facet ${FUZZ.statusFacet.has(b)?'on':''}" data-fzs="${b}">${b} <b>${FUZZ.rows.filter(r=>statusBucket(r.status)===b).length}</b></span>`).join("");
   html+=`<div class="filterbar" style="margin-top:4px">
-      <input id="fzResFilter" type="text" placeholder="filter results…" style="min-width:160px;flex:0 1 260px" value="${esc(FUZZ.filter||"")}">
-      <span class="muted">${rows.length} / ${total} shown${FUZZ.running?' · <span style="color:var(--warn)">live…</span>':''}</span>
+      <input id="fzResFilter" type="text" placeholder="filter (keep)…" style="min-width:130px;flex:0 1 200px" value="${esc(FUZZ.filter||"")}">
+      <label class="chk" title="treat the keep-filter as a regular expression"><input type="checkbox" id="fzRegex" ${FUZZ.regex?"checked":""}> regex</label>
+      <input id="fzExclude" type="text" placeholder="exclude a,b,c…" style="min-width:130px;flex:0 1 200px" value="${esc(FUZZ.exclude||"")}" title="hide results containing ANY of these comma-separated terms">
+      <input id="fzHideSize" type="text" placeholder="hide size" value="${FUZZ.hideSize!=null?FUZZ.hideSize:''}" style="width:88px" title="hide results whose byte size equals this (soft-404 killer)">
+      <input id="fzMinWords" type="text" placeholder="min words" value="${FUZZ.minWords!=null?FUZZ.minWords:''}" style="width:88px" title="keep only results with at least this many words">
+      <span class="muted">${rows.length} / ${total}${FUZZ.running?' · <span style="color:var(--warn)">live…</span>':''}</span>
       <div style="margin-left:auto"><button class="ghost sm" id="fzExport" ${total?"":"disabled"}>⬇ Export URLs</button></div>
     </div>
     <div class="facets">${facetChips}</div>`;
@@ -812,7 +834,11 @@ function renderFuzzResults(){
     if(sorted.length<rows.length) html+=`<p class="muted">Showing first ${sorted.length} of ${rows.length} — refine the filter.</p>`;
   }
   out.innerHTML=html;
-  const rf=$("fzResFilter"); if(rf) rf.oninput=()=>{ FUZZ.filter=rf.value; renderFuzzResults(); const nf=$("fzResFilter"); if(nf){ nf.focus(); nf.setSelectionRange(nf.value.length,nf.value.length);} };
+  const rf=$("fzResFilter"); if(rf) rf.oninput=()=>{ FUZZ.filter=rf.value; renderFuzzResults(); refocusEl("fzResFilter"); };
+  const rg=$("fzRegex"); if(rg) rg.onchange=()=>{ FUZZ.regex=rg.checked; renderFuzzResults(); };
+  const ex2=$("fzExclude"); if(ex2) ex2.oninput=()=>{ FUZZ.exclude=ex2.value; renderFuzzResults(); refocusEl("fzExclude"); };
+  const hs=$("fzHideSize"); if(hs) hs.oninput=()=>{ const v=parseInt(hs.value); FUZZ.hideSize=isNaN(v)?null:v; renderFuzzResults(); refocusEl("fzHideSize"); };
+  const mw=$("fzMinWords"); if(mw) mw.oninput=()=>{ const v=parseInt(mw.value); FUZZ.minWords=isNaN(v)?null:v; renderFuzzResults(); refocusEl("fzMinWords"); };
   out.querySelectorAll("[data-fzs]").forEach(el=>el.onclick=()=>{ const b=el.dataset.fzs; FUZZ.statusFacet.has(b)?FUZZ.statusFacet.delete(b):FUZZ.statusFacet.add(b); renderFuzzResults(); });
   const ex=$("fzExport"); if(ex) ex.onclick=()=>dl(`fuzz_${(scanData&&scanData.domain)||"results"}.txt`, FUZZ.rows.map(r=>r.url).join("\n"));
 }
@@ -823,7 +849,7 @@ function renderFuzzResults(){
 let NUKE = {
   targets:"", modules:[], tags:"", severity:new Set(["critical","high","medium"]),
   template_path:"", rate_limit:150, concurrency:25, bulk_size:25, timeout:10,
-  retries:1, deadline:900, rows:[], running:false, es:null, filter:"", sevFacet:new Set(),
+  retries:1, deadline:900, rows:[], running:false, es:null, filter:"", exclude:"", sevFacet:new Set(),
 };
 let NUKE_META = null;
 const SEV_ORDER = ["critical","high","medium","low","info","unknown"];
@@ -947,9 +973,11 @@ function renderNukeResults(){
   if(NUKE.sevFacet.size) rows=rows.filter(r=>NUKE.sevFacet.has(r.severity));
   const f=(NUKE.filter||"").toLowerCase();
   if(f) rows=rows.filter(r=>(r.template||"").toLowerCase().includes(f)||(r.name||"").toLowerCase().includes(f)||(r.url||"").toLowerCase().includes(f)||(r.tags||[]).join(",").toLowerCase().includes(f));
+  rows=applyExclude(rows, NUKE.exclude, ["template","name","url","tags"]);
   const sevChips=SEV_ORDER.map(s=>{ const n=NUKE.rows.filter(r=>r.severity===s).length; if(!n&&!NUKE.sevFacet.has(s)) return ""; return `<span class="facet ${NUKE.sevFacet.has(s)?'on':''}" data-nksev="${s}"><span class="sev ${s}">${s}</span> <b>${n}</b></span>`; }).join("");
   let html=`<div class="filterbar" style="margin-top:4px">
-      <input id="nkResFilter" type="text" placeholder="filter findings…" style="min-width:160px;flex:0 1 260px" value="${esc(NUKE.filter||"")}">
+      <input id="nkResFilter" type="text" placeholder="filter (keep)…" style="min-width:130px;flex:0 1 220px" value="${esc(NUKE.filter||"")}">
+      <input id="nkResExclude" type="text" placeholder="exclude a,b,c…" style="min-width:130px;flex:0 1 220px" value="${esc(NUKE.exclude||"")}" title="hide findings containing ANY of these comma-separated terms">
       <span class="muted">${rows.length} / ${total} shown${NUKE.running?' · <span style="color:var(--bad)">scanning…</span>':''}</span>
       <div style="margin-left:auto"><button class="ghost sm" id="nkExport" ${total?"":"disabled"}>⬇ Export</button></div>
     </div>
@@ -970,7 +998,8 @@ function renderNukeResults(){
     if(shown.length<rows.length) html+=`<p class="muted">Showing first ${shown.length} of ${rows.length} — refine the filter.</p>`;
   }
   out.innerHTML=html;
-  const rf=$("nkResFilter"); if(rf) rf.oninput=()=>{ NUKE.filter=rf.value; renderNukeResults(); const n=$("nkResFilter"); if(n){ n.focus(); n.setSelectionRange(n.value.length,n.value.length);} };
+  const rf=$("nkResFilter"); if(rf) rf.oninput=()=>{ NUKE.filter=rf.value; renderNukeResults(); refocusEl("nkResFilter"); };
+  const nex=$("nkResExclude"); if(nex) nex.oninput=()=>{ NUKE.exclude=nex.value; renderNukeResults(); refocusEl("nkResExclude"); };
   out.querySelectorAll("[data-nksev]").forEach(el=>el.onclick=()=>{ const s=el.dataset.nksev; NUKE.sevFacet.has(s)?NUKE.sevFacet.delete(s):NUKE.sevFacet.add(s); renderNukeResults(); });
   const ex=$("nkExport"); if(ex) ex.onclick=()=>dl(`nuclei_findings.txt`, NUKE.rows.map(r=>`[${r.severity}] ${r.template} ${r.url}`).join("\n"));
 }
@@ -1090,9 +1119,9 @@ function resetEnumBtn(){ $("enumStart").disabled=false; $("enumStart").textConte
 async function startEnumerate(){
   const hosts=enumSelected();
   if(!hosts.length){ $("enumPhase").textContent="⚠ select at least one host"; return; }
-  const caps={dir_brute:$("enDir").checked, params:$("enParams").checked};
-  if(!caps.dir_brute && !caps.params){ $("enumPhase").textContent="⚠ enable at least one capability"; return; }
-  if(caps.dir_brute && !$("enWordlist").value){ $("enumPhase").textContent="⚠ pick a wordlist for directory brute-force"; return; }
+  const caps={dir_brute:$("enDir").checked, params:$("enParams").checked, vhosts:$("enVhost").checked};
+  if(!caps.dir_brute && !caps.params && !caps.vhosts){ $("enumPhase").textContent="⚠ enable at least one capability"; return; }
+  if((caps.dir_brute||caps.vhosts) && !$("enWordlist").value){ $("enumPhase").textContent="⚠ pick a wordlist (a subdomain list for vhost enum)"; return; }
   const body={ scan_id:currentScanId, hosts, capabilities:caps, wordlist:$("enWordlist").value, tool:$("enTool").value,
     extensions:$("enExt").value, threads:parseInt($("enThreads").value)||40,
     host_concurrency:parseInt($("enConc").value)||3, per_host_deadline:parseInt($("enDeadline").value)||120 };
@@ -1104,7 +1133,7 @@ async function startEnumerate(){
   es.onmessage=(e)=>{ const ev=JSON.parse(e.data);
     if(ev.kind==="phase") $("enumPhase").textContent="▸ "+ev.phase;
     else if(ev.kind==="result"){ if(ev.bucket==="content")counts.content++; else counts.params++; }
-    else if(ev.kind==="done"){ es.close(); resetEnumBtn(); $("enumPhase").textContent=`✓ done — ${ev.content} content hit(s), ${ev.params} param finding(s)${ev.saved?" · saved to Findings":""}`; if(ev.saved) refreshFindings(); }
+    else if(ev.kind==="done"){ es.close(); resetEnumBtn(); $("enumPhase").textContent=`✓ done — ${ev.content} content, ${ev.params} param${ev.vhosts?`, ${ev.vhosts} vhost`:""} finding(s)${ev.saved?" · saved to Findings":""}`; if(ev.saved) refreshFindings(); }
     else if(ev.kind==="error"){ es.close(); resetEnumBtn(); $("enumPhase").textContent="⚠ "+(ev.message||"error"); }
   };
   es.onerror=()=>{ es.close(); resetEnumBtn(); if(!$("enumPhase").textContent.startsWith("✓")) $("enumPhase").textContent="▸ stream ended"; };
@@ -1119,7 +1148,7 @@ $("scanBtn").onclick=startScan;
 $("domain").addEventListener("keydown",e=>{if(e.key==="Enter")startScan();});
 $("explainBtn").onclick=explain; $("askBtn").onclick=ask;
 $("ask").addEventListener("keydown",e=>{if(e.key==="Enter")ask();});
-$("onlyLive").onchange=render; $("onlyParams").onchange=render; $("filter").oninput=render;
+$("onlyLive").onchange=render; $("onlyParams").onchange=render; $("filter").oninput=render; $("exclude").oninput=render;
 $("crawlBtn").onclick=runCrawl;
 $("exportBtn").onclick=(e)=>{ e.stopPropagation(); $("exportMenu").classList.toggle("show"); };
 $("exportMenu").querySelectorAll("[data-exp]").forEach(a=>a.onclick=()=>doExport(a.dataset.exp));

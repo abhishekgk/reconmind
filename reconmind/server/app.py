@@ -829,12 +829,17 @@ async def api_enumerate(req: EnumerateRequest):
         shown = ", ".join(oos[:5]) + ("…" if len(oos) > 5 else "")
         raise HTTPException(400, f"{len(oos)} host(s) out of scope: {shown}.")
 
-    # For param discovery, prefer the loaded scan's param-less endpoints.
-    param_urls = []
-    if caps.get("params") and req.scan_id and req.scan_id in SCANS:
+    # For param discovery, prefer the loaded scan's param-less endpoints; and
+    # figure out the base domain for vhost fuzzing.
+    param_urls, base_domain = [], ""
+    if req.scan_id and req.scan_id in SCANS:
         data = SCANS[req.scan_id].to_dict()
+        base_domain = data.get("domain") or ""
         param_urls = [e["url"] for e in data.get("endpoints", [])
                       if e.get("url") and not e.get("params")][:300]
+    if not base_domain and hosts:
+        parts = fuzzer._host_of(hosts[0]).split(".")
+        base_domain = ".".join(parts[-2:]) if len(parts) >= 2 else parts[0]
 
     job_id = uuid.uuid4().hex[:12]
     queue: asyncio.Queue = asyncio.Queue()
@@ -842,6 +847,7 @@ async def api_enumerate(req: EnumerateRequest):
     opts = req.model_dump()
     opts["hosts"] = hosts
     opts["param_urls"] = param_urls
+    opts["base_domain"] = base_domain
 
     async def _run():
         try:
@@ -859,8 +865,11 @@ async def api_enumerate(req: EnumerateRequest):
                     saved = _attach_findings(req.scan_id, "fuzz", res["content"]) or saved
                 if res.get("params"):
                     saved = _attach_findings(req.scan_id, "params", res["params"]) or saved
+                if res.get("vhosts"):
+                    saved = _attach_findings(req.scan_id, "vhost", res["vhosts"]) or saved
             queue.put_nowait({"kind": "done", "content": len(res.get("content", [])),
-                              "params": len(res.get("params", [])), "saved": saved})
+                              "params": len(res.get("params", [])),
+                              "vhosts": len(res.get("vhosts", [])), "saved": saved})
         except Exception as e:
             import traceback
             traceback.print_exc()
