@@ -352,6 +352,7 @@ function renderSubs(){
     {key:"title",label:"Title",val:r=>r.title||"",cell:r=>`<td>${esc(r.title)}</td>`},
     {key:"tech",label:"Tech / Server",val:r=>(r.tech||[]).join(",")||r.server||"",cell:r=>`<td class="muted">${(r.tech||[]).slice(0,4).map(t=>`<span class="tag">${esc(t)}</span>`).join("")}${r.cdn?`<span class="tag">cdn:${esc(r.cdn)}</span>`:""} ${esc(r.server||"")}</td>`},
     {key:"takeover",label:"Takeover",val:r=>r.takeover?(r.takeover.confidence==="high"?2:1):0,cell:r=>r.takeover?`<td><span class="tobadge ${r.takeover.confidence}">${esc(r.takeover.service)}</span></td>`:`<td></td>`},
+    {key:"act",label:"",nosort:true,cell:r=> (r.live&&r.url)?`<td style="white-space:nowrap"><button class="ghost sm" title="Fuzz this host" onclick="pivotFuzz('${esc(r.url)}')">🎯</button> <button class="ghost sm" title="Nuclei this host" onclick="pivotNuclei('${esc(r.url)}')">☢</button></td>`:`<td></td>`},
     {key:"note",label:"Note",nosort:true,cell:r=>`<td><input class="notein" value="${esc(getNote(r.host).note)}" placeholder="…" onchange="saveNote('${esc(r.host)}',this.value)"></td>`},
   ];
   renderTable("subs", cols, rows, scanData.hosts.length);
@@ -359,6 +360,36 @@ function renderSubs(){
 window.toggleRev=(host,el)=>{ const n=getNote(host); setNote(host,{reviewed:!n.reviewed}); el.classList.toggle("on"); el.closest("tr").classList.toggle("reviewed"); };
 window.saveNote=(host,val)=>setNote(host,{note:val});
 window.openLight=(src)=>{ $("lightboxImg").src=src; $("lightbox").classList.add("show"); };
+
+// ---------- cross-tool pivots (send a target from one tab into another) ----------
+function pivotFuzz(url){
+  if(!url) return;
+  FUZZ.url=url; selectTab("fuzzer");
+  const el=$("fzUrl"); if(el){ el.value=url; el.focus(); }
+  window.scrollTo(0,0); $("phase") && ($("phase").textContent=`▸ sent ${url} to the Fuzzer — add a FUZZ point (or leave it) and Start`);
+}
+function pivotNuclei(url){
+  if(!url) return;
+  const cur=(NUKE.targets||"").trim();
+  NUKE.targets = cur && cur.split(/\s+/).indexOf(url)<0 ? (cur+"\n"+url) : (cur||url);
+  selectTab("nuclei");
+  const el=$("nkTargets"); if(el) el.value=NUKE.targets;
+  window.scrollTo(0,0);
+}
+function reportSnippet(r){
+  // A ready-to-paste Markdown line for a finding row.
+  const sev=(r.severity||"").toUpperCase();
+  const label=r.label||r.template||r.type||"";
+  const bits=[sev&&`**${sev}**`, label&&`\`${label}\``, r.name, r.url&&`— ${r.url}`].filter(Boolean);
+  return "- "+bits.join(" ");
+}
+function copyReport(text, el){
+  const done=()=>{ if(el){ const t=el.textContent; el.textContent="✓"; setTimeout(()=>el.textContent=t,900); } };
+  if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(done).catch(()=>{ prompt("Copy this:", text); }); }
+  else prompt("Copy this:", text);
+}
+window.pivotFuzz=pivotFuzz; window.pivotNuclei=pivotNuclei;
+window.copyFinding=(enc,el)=>copyReport(decodeURIComponent(enc), el);
 
 function renderIps(){
   const all=scanData.ip_assets||[];
@@ -401,6 +432,7 @@ function renderEndpoints(){
     {key:"params",label:"Params",val:r=>r.params?1:0,cell:r=>`<td>${r.params?'<span class="yes">✓</span>':'<span class="no">–</span>'}</td>`},
     {key:"ext",label:"Ext",val:r=>r.ext||"",cell:r=>`<td class="mono muted">${esc(r.ext)}</td>`},
     {key:"source",label:"Source",val:r=>r.source||"",cell:r=>`<td><span class="tag">${esc(r.source)}</span></td>`},
+    {key:"act",label:"",nosort:true,cell:r=>`<td style="white-space:nowrap"><button class="ghost sm" title="Fuzz this URL" onclick="pivotFuzz('${esc(r.url)}')">🎯</button> <button class="ghost sm" title="Nuclei this URL" onclick="pivotNuclei('${esc(r.url)}')">☢</button></td>`},
   ];
   renderTable("endpoints", cols, rows, all.length, 1500);
 }
@@ -449,6 +481,7 @@ function renderFindings(){
     {key:"name",label:"Name",val:r=>r.name||"",cell:r=>`<td>${esc(r.name)}</td>`},
     {key:"url",label:"Matched URL",val:r=>r.url||"",cell:r=>`<td class="mono"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc((r.url||"").length>90?r.url.slice(0,90)+'…':r.url)}</a></td>`},
     {key:"extra",label:"Detail",nosort:true,cell:r=>`<td class="muted">${(r.tags||[]).slice(0,4).map(t=>`<span class="tag">${esc(t)}</span>`).join("")}${esc(r.extra)}</td>`},
+    {key:"act",label:"",nosort:true,cell:r=>{const snip=encodeURIComponent(reportSnippet(r));return `<td style="white-space:nowrap">${r.url?`<button class="ghost sm" title="Nuclei this URL" onclick="pivotNuclei('${esc(r.url)}')">☢</button> `:""}<button class="ghost sm" title="Copy as a report line" onclick="copyFinding('${snip}',this)">📋</button></td>`;}},
   ];
   renderTable("findings", cols, rows, all.length, 2000);
 }
