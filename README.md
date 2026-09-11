@@ -203,6 +203,27 @@ of those folders and they appear in the dropdown immediately (no restart).
 > few native-heavy tools (`puredns`, `massdns`, `amass` active mode) are smoothest
 > under **WSL2**; everything else, including all passive sources, runs natively.
 
+## Updating
+
+Already have an older copy? You **don't** need to reinstall — just pull the latest:
+
+```bash
+# macOS/Linux
+./update.sh                 # = git pull + refresh deps
+
+# Windows
+powershell -ExecutionPolicy Bypass -File .\update.ps1
+
+# or by hand, anywhere
+git pull && python -m pip install -r requirements.txt   # then restart: python run.py
+```
+
+Your scans, API keys, findings and settings live in `~/.reconmind` (outside the repo), so
+updates never touch them. If you originally grabbed a **ZIP** instead of `git clone`, switch to a
+clone once (`git clone https://github.com/abhishekgk/reconmind`) so future updates are one command.
+New Fuzzer/Nuclei wordlists or tools are optional add-ons — re-run `./install.sh` only if you want
+those extras.
+
 ## Run
 
 ```bash
