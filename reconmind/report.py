@@ -54,9 +54,33 @@ def to_markdown(scan: dict) -> str:
     for label, key in [("Subdomains", "total"), ("Live hosts", "live"),
                        ("IPs", "ips"), ("ASNs / netblocks", "asns"),
                        ("Endpoints", "endpoints"), ("Related domains", "related"),
-                       ("Takeover candidates", "takeovers")]:
+                       ("Takeover candidates", "takeovers"), ("Findings", "findings")]:
         L.append(f"| {label} | {c.get(key, 0)} |")
     L.append("")
+
+    findings = scan.get("findings", {}) or {}
+    nuc, exp = findings.get("nuclei", []), findings.get("exposures", [])
+    if nuc or exp:
+        _order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4, "unknown": 5}
+        L.append("## Findings")
+        L.append("")
+        if nuc:
+            L.append(f"### Nuclei ({len(nuc)})")
+            L.append("")
+            L.append("| Severity | Template | Name | Matched URL |")
+            L.append("|---|---|---|---|")
+            for n in sorted(nuc, key=lambda r: _order.get(r.get("severity"), 9))[:300]:
+                name = (n.get("name") or "").replace("|", "\\|")
+                L.append(f"| {n.get('severity','')} | `{n.get('template','')}` | {name} | `{n.get('url','')}` |")
+            L.append("")
+        if exp:
+            L.append(f"### Exposed files ({len(exp)})")
+            L.append("")
+            L.append("| Severity | Type | URL |")
+            L.append("|---|---|---|")
+            for e in sorted(exp, key=lambda r: _order.get(r.get("severity"), 9))[:200]:
+                L.append(f"| {e.get('severity','')} | {e.get('type','')} | `{e.get('url','')}` |")
+            L.append("")
 
     takeovers = scan.get("takeovers", [])
     if takeovers:
@@ -176,7 +200,7 @@ def to_html(scan: dict) -> str:
 
     cards = [("Subdomains", "total"), ("Live", "live"), ("IPs", "ips"),
              ("ASNs", "asns"), ("Endpoints", "endpoints"), ("Related", "related"),
-             ("Takeovers", "takeovers")]
+             ("Takeovers", "takeovers"), ("Findings", "findings")]
     P.append('<div class=cards>')
     for label, key in cards:
         P.append(f'<div class=card><div class=n>{_e(c.get(key, 0))}</div>'
@@ -194,6 +218,32 @@ def to_html(scan: dict) -> str:
                      f'<td class=mono>{_e(t.get("host"))}</td><td>{_e(t.get("service"))}</td>'
                      f'<td class=mono>{_e(t.get("cname"))}</td></tr>')
         P.append("</tbody></table>")
+
+    findings = scan.get("findings", {}) or {}
+    nuc, exp = findings.get("nuclei", []), findings.get("exposures", [])
+    if nuc or exp:
+        _order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4, "unknown": 5}
+        _sc = {"critical": "hi", "high": "hi", "medium": "med"}
+        P.append("<h2>Findings</h2>")
+        if nuc:
+            P.append(f"<h3>Nuclei ({len(nuc)})</h3>")
+            P.append("<table><thead><tr><th>Severity</th><th>Template</th><th>Name</th>"
+                     "<th>Matched URL</th></tr></thead><tbody>")
+            for n in sorted(nuc, key=lambda r: _order.get(r.get("severity"), 9)):
+                cls = _sc.get(n.get("severity"), "")
+                P.append(f'<tr><td class={cls}>{_e(n.get("severity"))}</td>'
+                         f'<td class=mono>{_e(n.get("template"))}</td><td>{_e(n.get("name"))}</td>'
+                         f'<td class=mono><a href="{_e(n.get("url"))}" target=_blank rel=noopener>{_e(n.get("url"))}</a></td></tr>')
+            P.append("</tbody></table>")
+        if exp:
+            P.append(f"<h3>Exposed files ({len(exp)})</h3>")
+            P.append("<table><thead><tr><th>Severity</th><th>Type</th><th>URL</th>"
+                     "</tr></thead><tbody>")
+            for e in sorted(exp, key=lambda r: _order.get(r.get("severity"), 9)):
+                cls = _sc.get(e.get("severity"), "")
+                P.append(f'<tr><td class={cls}>{_e(e.get("severity"))}</td><td>{_e(e.get("type"))}</td>'
+                         f'<td class=mono><a href="{_e(e.get("url"))}" target=_blank rel=noopener>{_e(e.get("url"))}</a></td></tr>')
+            P.append("</tbody></table>")
 
     live = _live(scan)
     if live:

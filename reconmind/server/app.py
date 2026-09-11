@@ -67,8 +67,9 @@ class LoadedScan:
     """Wraps a saved/imported scan dict so LLM + snapshot endpoints can use it
     exactly like a live Scan (they only ever call .to_dict())."""
 
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, filename: str | None = None):
         self._data = data
+        self.filename = filename   # source file on disk, so saves update in place
 
     def to_dict(self) -> dict:
         return self._data
@@ -119,6 +120,7 @@ class FuzzRequest(BaseModel):
     data: str = ""                    # request body for POST/PUT/…
     deadline: int = 600
     quick_wins: bool = False          # also probe .git/.env/swagger/backups
+    scan_id: str | None = None        # if set, save hits/exposures into this scan
 
 
 class NucleiRequest(BaseModel):
@@ -157,6 +159,47 @@ def _apply_endpoints(scan, endpoints: list) -> None:
         scan._data.setdefault("counts", {})["endpoints"] = len(endpoints)
     else:
         scan.endpoints = endpoints
+
+
+def _persist(scan) -> None:
+    """Save a scan to disk, updating its existing file in place when we know it
+    (LoadedScan.filename or a live Scan's recorded saved_as), so repeated
+    crawl/fuzz/nuclei saves don't spawn duplicate scan files."""
+    fname = scan.filename if isinstance(scan, LoadedScan) else getattr(scan, "saved_as", None)
+    try:
+        p = store.save(scan.to_dict(), filename=fname)
+    except Exception:
+        return
+    if isinstance(scan, LoadedScan):
+        scan.filename = p.name
+    else:
+        scan.saved_as = p.name
+
+
+_FINDINGS_CAP = 3000  # per bucket, keep the most recent
+
+
+def _attach_findings(scan_id: str | None, bucket: str, rows: list) -> bool:
+    """Append Fuzzer/Nuclei results into a loaded scan's findings and persist it.
+
+    ``bucket`` is one of nuclei/exposures/fuzz. Works for both a live Scan and a
+    LoadedScan. Returns True if it attached (a scan was loaded)."""
+    if not rows or not scan_id or scan_id not in SCANS:
+        return False
+    scan = SCANS[scan_id]
+    if isinstance(scan, LoadedScan):
+        # Older saved scans predate the findings field — create it on demand.
+        findings = scan._data.setdefault(
+            "findings", {"nuclei": [], "exposures": [], "fuzz": []})
+        findings.setdefault(bucket, [])
+        findings[bucket] = (findings[bucket] + rows)[-_FINDINGS_CAP:]
+        scan._data.setdefault("counts", {})["findings"] = sum(len(v) for v in findings.values())
+    else:  # live Scan: mutate its .findings; to_dict() recomputes counts
+        findings = scan.findings
+        findings.setdefault(bucket, [])
+        findings[bucket] = (findings[bucket] + rows)[-_FINDINGS_CAP:]
+    _persist(scan)
+    return True
 
 
 def _norm_domain(raw: str) -> str:
@@ -245,7 +288,9 @@ async def api_history_load(filename: str):
     data = store.load(filename)
     if not data:
         raise HTTPException(404, "scan not found")
-    return {"id": _register_scan(data), "data": data}
+    scan_id = _register_scan(data)
+    SCANS[scan_id].filename = filename   # so later saves update this same file
+    return {"id": scan_id, "data": data}
 
 
 @app.post("/api/import")
@@ -276,10 +321,7 @@ async def api_start_scan(req: ScanRequest):
             scan.status = "error"
             scan.emit("error", message=str(e))
         finally:
-            try:
-                store.save(scan.to_dict())
-            except Exception:
-                pass
+            _persist(scan)
 
     _spawn(_run())
     return {"id": scan_id, "domain": domain}
@@ -361,10 +403,7 @@ async def api_crawl(req: CrawlRequest):
             queue.put_nowait({"kind": "error", "message": str(e)})
         finally:
             CRAWL_JOBS[job_id]["status"] = "done"
-            try:
-                store.save(scan.to_dict())
-            except Exception:
-                pass
+            _persist(scan)
 
     _spawn(_run())
     return {"job_id": job_id}
@@ -431,18 +470,24 @@ async def api_fuzz(req: FuzzRequest):
             result = await fuzzer.run_fuzz(opts, on_result=on_result,
                                            on_progress=on_progress)
             exposures = []
+            base = fuzzer._prep_url(url, req.tool)[1]
             if req.quick_wins:
                 on_progress("probing for exposed files (.git/.env/swagger/backups)")
-                base = fuzzer._prep_url(url, req.tool)[1]
                 exposures = await fuzzer.quick_wins(
                     [base],
                     on_result=lambda r: queue.put_nowait({"kind": "exposure", "row": r}),
                     on_progress=on_progress)
+            # Persist into the loaded scan (if any) so results survive a refresh.
+            saved = False
+            if req.scan_id:
+                hits = [dict(r, target=base) for r in FUZZ_JOBS[job_id]["rows"]]
+                saved = _attach_findings(req.scan_id, "fuzz", hits)
+                saved = _attach_findings(req.scan_id, "exposures", exposures) or saved
             if not result.get("ok") and result.get("error"):
                 queue.put_nowait({"kind": "error", "message": result["error"]})
             else:
                 queue.put_nowait({"kind": "done", "count": result.get("count", 0),
-                                  "exposures": len(exposures),
+                                  "exposures": len(exposures), "saved": saved,
                                   "truncated": result.get("truncated", False)})
         except Exception as e:
             import traceback
@@ -515,12 +560,16 @@ async def api_nuclei(req: NucleiRequest):
 
             result = await nuclei.run_nuclei(opts, on_result=on_result,
                                              on_progress=on_progress)
+            saved = False
+            if req.scan_id:
+                saved = _attach_findings(req.scan_id, "nuclei",
+                                         NUCLEI_JOBS[job_id]["findings"])
             if not result.get("ok") and result.get("error"):
                 queue.put_nowait({"kind": "error", "message": result["error"]})
             else:
                 queue.put_nowait({"kind": "done", "count": result.get("count", 0),
                                   "loaded": result.get("loaded"),
-                                  "note": result.get("note", ""),
+                                  "note": result.get("note", ""), "saved": saved,
                                   "truncated": result.get("truncated", False)})
         except Exception as e:
             import traceback

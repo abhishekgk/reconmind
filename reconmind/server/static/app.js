@@ -10,8 +10,9 @@ let priorHosts = new Set();  // hosts from the previous scan of this domain (for
 const SORT = {
   subs:{k:"live",d:-1}, ips:{k:"ip",d:1}, asns:{k:"asn",d:1},
   endpoints:{k:"host",d:1}, takeovers:{k:"confidence",d:1}, related:{k:"domain",d:1},
+  findings:{k:"severity",d:1},
 };
-const facet = { status:new Set(), epStatus:new Set(), shot:false, takeover:false, newOnly:false, hideRev:false };
+const facet = { status:new Set(), epStatus:new Set(), findType:new Set(), shot:false, takeover:false, newOnly:false, hideRev:false };
 
 const INTERESTING = /(^|[.\-])(dev|test|stage|staging|uat|qa|sandbox|internal|intranet|corp|admin|api|graphql|gateway|auth|sso|login|jenkins|gitlab|git|jira|grafana|kibana|vpn|legacy|old|beta|backup|s3|storage|preprod|demo)([.\-]|$)/i;
 
@@ -211,6 +212,9 @@ function renderPills(){
     .map(([k,v])=>`<span class="pill${v===0?' zero':''}" ${v===0?'title="0 found — may be rate-limited during a big scan, or no data for this target"':''}>${esc(k)} <b>${v}</b></span>`).join("");
 }
 async function refresh(id){ const data=await (await fetch(`/api/scan/${id}`)).json(); applyScan(id,data); }
+// Quietly re-pull the loaded scan (e.g. after Fuzzer/Nuclei saved findings into it)
+// so the Findings count + tab update without leaving the current tab.
+async function refreshFindings(){ if(!currentScanId) return; try{ const d=await (await fetch(`/api/scan/${currentScanId}`)).json(); if(d && !d.detail) applyScan(currentScanId,d,true); }catch(e){} }
 
 function applyScan(id, data, partial){
   currentScanId=id; scanData=data;
@@ -218,9 +222,10 @@ function applyScan(id, data, partial){
   $("cTotal").textContent=c.total||0; $("cLive").textContent=c.live||0;
   $("cIps").textContent=c.ips||0; $("cAsns").textContent=c.asns||0;
   $("cRelated").textContent=c.related||0; $("cEndpoints").textContent=c.endpoints||0;
-  $("cTakeovers").textContent=c.takeovers||0;
+  $("cTakeovers").textContent=c.takeovers||0; $("cFindings").textContent=c.findings||0;
   $("tSubs").textContent=c.total||0; $("tIps").textContent=c.ips||0; $("tAsns").textContent=c.asns||0;
   $("tEndpoints").textContent=c.endpoints||0; $("tTakeovers").textContent=c.takeovers||0; $("tRelated").textContent=c.related||0;
+  $("tFindings").textContent=c.findings||0;
   render();
   if(!partial) computeDiff(data);  // fetch prior scan for "new" badges (once, on final)
 }
@@ -255,6 +260,7 @@ function render(){
   else if(activeTab==="endpoints") renderEndpoints();
   else if(activeTab==="takeovers") renderTakeovers();
   else if(activeTab==="related") renderRelated();
+  else if(activeTab==="findings") renderFindings();
 }
 function filterText(){ return $("filter").value.trim().toLowerCase(); }
 function renderTable(tab, cols, rows, total, cap){
@@ -289,11 +295,17 @@ function renderFacets(){
     const n=(b)=>all.filter(r=>epBucket(r.status)===b).length;
     f.innerHTML = ["2xx","3xx","4xx","5xx"].map(s=>chip("ep:"+s,`${s} <b>${n(s)}</b>`,facet.epStatus.has(s))).join("")
       + chip("ep:none",`∅ unknown <b>${n("none")}</b>`,facet.epStatus.has("none"));
+  } else if(activeTab==="findings"){
+    const all=findingRows();
+    if(!all.length){ f.innerHTML=""; return; }
+    const n=(t)=>all.filter(r=>r._t===t).length;
+    f.innerHTML = ["nuclei","exposure","fuzz"].map(t=>n(t)?chip("ft:"+t,`${t} <b>${n(t)}</b>`,facet.findType.has(t)):"").join("");
   } else { f.innerHTML=""; return; }
   f.querySelectorAll("[data-facet]").forEach(el=>el.onclick=()=>{
     const id=el.dataset.facet;
     if(id.startsWith("status:")){ const s=id.slice(7); facet.status.has(s)?facet.status.delete(s):facet.status.add(s); }
     else if(id.startsWith("ep:")){ const s=id.slice(3); facet.epStatus.has(s)?facet.epStatus.delete(s):facet.epStatus.add(s); }
+    else if(id.startsWith("ft:")){ const s=id.slice(3); facet.findType.has(s)?facet.findType.delete(s):facet.findType.add(s); }
     else if(id==="shot") facet.shot=!facet.shot;
     else if(id==="takeover") facet.takeover=!facet.takeover;
     else if(id==="new") facet.newOnly=!facet.newOnly;
@@ -401,6 +413,30 @@ function renderRelated(){
     {key:"_act",label:"",nosort:true,cell:r=>`<td><button class="ghost sm" onclick="document.getElementById('domain').value='${esc(r.domain)}';window.scrollTo(0,0);">scan this</button></td>`},
   ];
   renderTable("related", cols, rows, all.length);
+}
+const SEV_RANK = {critical:0,high:1,medium:2,low:3,info:4,unknown:5};
+function findingRows(){
+  const f=(scanData&&scanData.findings)||{}; const rows=[];
+  (f.nuclei||[]).forEach(n=>rows.push({_t:"nuclei",severity:(n.severity||"unknown"),label:n.template||"",name:n.name||"",url:n.url||"",tags:n.tags||[],extra:n.matcher||""}));
+  (f.exposures||[]).forEach(e=>rows.push({_t:"exposure",severity:(e.severity||"info"),label:e.type||"",name:e.type||"",url:e.url||"",tags:[],extra:e.evidence||""}));
+  (f.fuzz||[]).forEach(x=>rows.push({_t:"fuzz",severity:"info",label:(x.status!=null?String(x.status):""),name:x.path||x.url||"",url:x.url||"",tags:[],extra:(x.size!=null?fzHuman(x.size):"")+(x.source?(" · "+x.source):"")}));
+  return rows;
+}
+function renderFindings(){
+  const all=findingRows();
+  if(!all.length){ $("showing").textContent=""; $("panel").innerHTML=`<p class="muted">No saved findings yet. Run the <b>☢ Nuclei</b> or <b>🎯 Fuzzer</b> tab <b>with a scan loaded</b> (run/import/History) — their results get saved here, into the scan, and into reports. Nuclei findings and exposed-file hits are the high-signal ones.</p>`; return; }
+  let rows=all.slice();
+  if(facet.findType.size) rows=rows.filter(r=>facet.findType.has(r._t));
+  const ff=filterText(); if(ff) rows=rows.filter(r=>(r.url||"").toLowerCase().includes(ff)||(r.name||"").toLowerCase().includes(ff)||(r.label||"").toLowerCase().includes(ff)||(r.tags||[]).join(",").toLowerCase().includes(ff)||r._t.includes(ff));
+  const cols=[
+    {key:"severity",label:"Severity",val:r=>SEV_RANK[r.severity]!=null?SEV_RANK[r.severity]:9,cell:r=>`<td><span class="sev ${esc(r.severity)}">${esc(r.severity)}</span></td>`},
+    {key:"_t",label:"Type",val:r=>r._t,cell:r=>`<td><span class="tag">${esc(r._t)}</span></td>`},
+    {key:"label",label:"Template / Path",val:r=>r.label||"",cell:r=>`<td class="mono">${esc(r.label)}</td>`},
+    {key:"name",label:"Name",val:r=>r.name||"",cell:r=>`<td>${esc(r.name)}</td>`},
+    {key:"url",label:"Matched URL",val:r=>r.url||"",cell:r=>`<td class="mono"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc((r.url||"").length>90?r.url.slice(0,90)+'…':r.url)}</a></td>`},
+    {key:"extra",label:"Detail",nosort:true,cell:r=>`<td class="muted">${(r.tags||[]).slice(0,4).map(t=>`<span class="tag">${esc(t)}</span>`).join("")}${esc(r.extra)}</td>`},
+  ];
+  renderTable("findings", cols, rows, all.length, 2000);
 }
 
 // ---------- LLM ----------
@@ -671,7 +707,8 @@ function startFuzz(){
   const body={ url:FUZZ.url, tool:FUZZ.tool, wordlist:FUZZ.wordlist, method:FUZZ.method,
     headers:FUZZ.headers.filter(h=>h.name.trim()), extensions:FUZZ.extensions,
     match_codes:FUZZ.match_codes, filter_codes:FUZZ.filter_codes, threads:FUZZ.threads,
-    rps:FUZZ.rps, recursion:FUZZ.recursion, data:FUZZ.data, quick_wins:FUZZ.quick_wins };
+    rps:FUZZ.rps, recursion:FUZZ.recursion, data:FUZZ.data, quick_wins:FUZZ.quick_wins,
+    scan_id:currentScanId };
   $("fzPhase").textContent="▸ starting…";
   fetch("/api/fuzz",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
     .then(r=>r.json()).then(res=>{
@@ -683,7 +720,7 @@ function startFuzz(){
         else if(ev.kind==="result"){ FUZZ.rows.push(ev.row); scheduleFuzzRender(); }
         else if(ev.kind==="exposure"){ FUZZ.exposures.push(ev.row); scheduleFuzzRender(); }
         else if(ev.kind==="done"){ es.close(); FUZZ.running=false; updateFuzzButtons();
-          $("fzPhase").textContent=`✓ done — ${FUZZ.rows.length} result${FUZZ.rows.length===1?"":"s"}${ev.exposures?`, ${ev.exposures} exposure${ev.exposures===1?"":"s"}`:""}${ev.truncated?" (capped at 5000)":""}`; renderFuzzResults(); }
+          $("fzPhase").textContent=`✓ done — ${FUZZ.rows.length} result${FUZZ.rows.length===1?"":"s"}${ev.exposures?`, ${ev.exposures} exposure${ev.exposures===1?"":"s"}`:""}${ev.truncated?" (capped at 5000)":""}${ev.saved?" · saved to Findings":""}`; renderFuzzResults(); if(ev.saved) refreshFindings(); }
         else if(ev.kind==="error"){ es.close(); FUZZ.running=false; updateFuzzButtons(); $("fzPhase").textContent="⚠ "+(ev.message||"error"); renderFuzzResults(); }
       };
       es.onerror=()=>{ es.close(); FUZZ.running=false; updateFuzzButtons(); if(!$("fzPhase").textContent.startsWith("✓")) $("fzPhase").textContent="▸ stream ended"; };
@@ -832,7 +869,7 @@ function startNuclei(){
   const body={ targets:NUKE.targets, templates:NUKE.modules, tags:NUKE.tags,
     template_path:NUKE.template_path, severity:Array.from(NUKE.severity),
     rate_limit:NUKE.rate_limit, concurrency:NUKE.concurrency, bulk_size:NUKE.bulk_size,
-    timeout:NUKE.timeout, retries:NUKE.retries, deadline:NUKE.deadline };
+    timeout:NUKE.timeout, retries:NUKE.retries, deadline:NUKE.deadline, scan_id:currentScanId };
   $("nkPhase").textContent="▸ starting…";
   fetch("/api/nuclei",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})
     .then(r=>r.json()).then(res=>{
@@ -845,8 +882,8 @@ function startNuclei(){
         else if(ev.kind==="done"){ es.close(); NUKE.running=false; updateNukeButtons();
           const loaded=(ev.loaded!=null)?` · ${ev.loaded} template(s) run`:"";
           const note=ev.note?`  —  ⚠ ${ev.note}`:"";
-          $("nkPhase").textContent=`✓ done — ${NUKE.rows.length} finding${NUKE.rows.length===1?"":"s"}${loaded}${ev.truncated?" (capped at 5000)":""}${note}`;
-          NUKE.lastNote=ev.note||""; renderNukeResults(); }
+          $("nkPhase").textContent=`✓ done — ${NUKE.rows.length} finding${NUKE.rows.length===1?"":"s"}${loaded}${ev.saved?" · saved to Findings":""}${ev.truncated?" (capped at 5000)":""}${note}`;
+          NUKE.lastNote=ev.note||""; renderNukeResults(); if(ev.saved) refreshFindings(); }
         else if(ev.kind==="error"){ es.close(); NUKE.running=false; updateNukeButtons(); $("nkPhase").textContent="⚠ "+(ev.message||"error"); renderNukeResults(); }
       };
       es.onerror=()=>{ es.close(); NUKE.running=false; updateNukeButtons(); if(!$("nkPhase").textContent.startsWith("✓")) $("nkPhase").textContent="▸ stream ended"; };

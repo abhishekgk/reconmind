@@ -40,6 +40,8 @@ class Scan:
     takeovers: list[dict] = field(default_factory=list)     # subdomain takeover candidates
     shots: dict[str, str] = field(default_factory=dict)     # host -> screenshot path
     per_source: dict[str, int] = field(default_factory=dict)
+    # Findings attached by the Fuzzer/Nuclei tabs (persisted with the scan).
+    findings: dict = field(default_factory=lambda: {"nuclei": [], "exposures": [], "fuzz": []})
 
     events: asyncio.Queue = field(default_factory=asyncio.Queue)
     status: str = "pending"
@@ -117,6 +119,7 @@ class Scan:
                 "related": len(self.related_domains),
                 "endpoints": len(self.endpoints),
                 "takeovers": len(self.takeovers),
+                "findings": sum(len(v) for v in self.findings.values()),
             },
             "per_source": self.per_source,
             "hosts": rows,
@@ -125,6 +128,7 @@ class Scan:
             "related_domains": sorted(self.related_domains),
             "endpoints": self.endpoints,
             "takeovers": self.takeovers,
+            "findings": self.findings,
         }
 
 

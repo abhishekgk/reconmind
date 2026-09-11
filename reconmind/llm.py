@@ -135,6 +135,20 @@ def _retrieve(question: str, scan: dict, cap: int = 40) -> str:
     if rel:
         out.append(f"Matching related domains ({len(rel)}): " + ", ".join(rel[:cap]))
 
+    f = scan.get("findings", {}) or {}
+    allf = ([("nuclei", x) for x in f.get("nuclei", [])]
+            + [("exposure", x) for x in f.get("exposures", [])]
+            + [("fuzz", x) for x in f.get("fuzz", [])])
+    fm = [(k, x) for k, x in allf
+          if hit(x.get("url", ""), x.get("name", ""), x.get("template", ""),
+                 x.get("type", ""), " ".join(x.get("tags", []) or []))]
+    if fm:
+        out.append(f"Matching findings ({len(fm)}):")
+        for k, x in fm[:cap]:
+            label = x.get("template") or x.get("type") or ""
+            out.append(f"- [{k}/{x.get('severity','')}] {label} {x.get('name','')} "
+                       f"@ {x.get('url','')}")
+
     return "\n".join(out)
 
 
@@ -171,6 +185,17 @@ def _surface_digest(scan: dict, live_cap: int = 60) -> str:
         lines.append(f"\nEndpoints: {len(eps)} total, {len(params)} with query params. Sample with params:")
         for e in params[:20]:
             lines.append(f"- {e['url']}")
+
+    f = scan.get("findings", {}) or {}
+    nuc, exp = f.get("nuclei", []), f.get("exposures", [])
+    if nuc or exp:
+        order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4, "unknown": 5}
+        lines.append(f"\nFINDINGS (from Nuclei/Fuzzer) — nuclei: {len(nuc)}, exposed files: {len(exp)}:")
+        for n in sorted(nuc, key=lambda r: order.get(r.get("severity"), 9))[:30]:
+            lines.append(f"- [{n.get('severity','?')}] {n.get('template','')} — "
+                         f"{n.get('name','')} @ {n.get('url','')}")
+        for e in exp[:15]:
+            lines.append(f"- [exposure/{e.get('severity','')}] {e.get('type','')} @ {e.get('url','')}")
 
     rel = scan.get("related_domains", [])
     if rel:
