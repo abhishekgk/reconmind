@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import auth, config, keys, llm, report, scope, store, tools
+from .. import auth, config, keys, llm, monitor, report, scope, store, tools
 from ..recon import fuzzer, nuclei
 from ..recon.crawl import crawl as run_crawl
 from ..recon.orchestrator import Scan, run_scan
@@ -169,6 +170,52 @@ FUZZ_JOBS: dict[str, dict] = {}
 # In-memory nuclei jobs (id -> {queue, status, findings}).
 NUCLEI_JOBS: dict[str, dict] = {}
 
+# Monitors currently mid-run, so the scheduler never double-launches one.
+_MON_RUNNING: set[str] = set()
+
+
+async def _run_monitor(m: dict) -> None:
+    """Re-run recon for a monitor, diff against its previous scan, record new."""
+    mid, domain = m["id"], m["domain"]
+    if mid in _MON_RUNNING:
+        return
+    _MON_RUNNING.add(mid)
+    try:
+        monitor.update(mid, last_status="running", error=None)
+        prev_file = monitor.previous_file(domain)
+        prev = store.load(prev_file) if prev_file else None
+        scan = Scan(domain=domain, deep=bool(m.get("deep")))
+        await run_scan(scan)
+        data = scan.to_dict()
+        p = store.save(data)               # keep each run as history (for diffing)
+        counts, items = monitor.diff_new(data, prev)
+        monitor.update(mid, last_run=time.time(), last_status="done",
+                       last_file=p.name, new_counts=counts, new_items=items, error=None)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        monitor.update(mid, last_run=time.time(), last_status="error", error=str(e))
+    finally:
+        _MON_RUNNING.discard(mid)
+
+
+async def _monitor_loop() -> None:
+    """Every minute, launch any monitor whose interval has elapsed."""
+    while True:
+        try:
+            for m in monitor.list_monitors():
+                if monitor.due(m) and m["id"] not in _MON_RUNNING:
+                    _spawn(_run_monitor(m))
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        await asyncio.sleep(60)
+
+
+@app.on_event("startup")
+async def _start_scheduler():
+    _spawn(_monitor_loop())
+
 
 def _apply_endpoints(scan, endpoints: list) -> None:
     """Attach crawl results to either a live Scan or a LoadedScan dict."""
@@ -296,6 +343,55 @@ async def api_get_scope():
 @app.post("/api/scope")
 async def api_set_scope(req: ScopeRequest):
     return {"in_scope": scope.set_scope(req.in_scope)}
+
+
+# --- Monitoring ---------------------------------------------------------------
+
+class MonitorRequest(BaseModel):
+    domain: str
+    interval_hours: float = 24
+    deep: bool = False
+
+
+@app.get("/api/monitors")
+async def api_monitors():
+    return {"monitors": monitor.list_monitors(), "running": sorted(_MON_RUNNING)}
+
+
+@app.post("/api/monitors")
+async def api_add_monitor(req: MonitorRequest):
+    domain = _norm_domain(req.domain)
+    if not domain or "." not in domain:
+        raise HTTPException(400, "Please provide a valid domain to monitor.")
+    if not scope.in_scope(domain):
+        raise HTTPException(400, f"'{domain}' is not in your scope allow-list.")
+    return monitor.add(domain, req.interval_hours, req.deep)
+
+
+@app.delete("/api/monitors/{mid}")
+async def api_delete_monitor(mid: str):
+    if not monitor.remove(mid):
+        raise HTTPException(404, "monitor not found")
+    return {"ok": True}
+
+
+@app.post("/api/monitors/{mid}/toggle")
+async def api_toggle_monitor(mid: str):
+    m = monitor.get(mid)
+    if not m:
+        raise HTTPException(404, "monitor not found")
+    return monitor.set_active(mid, not m.get("active"))
+
+
+@app.post("/api/monitors/{mid}/run")
+async def api_run_monitor(mid: str):
+    m = monitor.get(mid)
+    if not m:
+        raise HTTPException(404, "monitor not found")
+    if mid in _MON_RUNNING:
+        return {"ok": True, "already_running": True}
+    _spawn(_run_monitor(m))
+    return {"ok": True, "started": True}
 
 
 @app.get("/api/tools")

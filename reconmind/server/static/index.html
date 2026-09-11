@@ -187,6 +187,7 @@
     <select id="modelSelect" class="modelsel" title="choose which LLM answers — Claude models (needs a key) or any local Ollama model"></select>
     <button class="ghost" id="importBtn">⬆ Import</button>
     <button class="ghost" id="historyBtn">🕘 History</button>
+    <button class="ghost" id="monitorBtn" title="scheduled re-scans + change alerts">📡 Monitor</button>
     <button class="ghost" id="scopeBtn" title="scope allow-list — restrict which targets can be scanned">🎯 Scope</button>
     <button class="ghost" id="keysBtn">⚙ API keys</button>
     <span id="authBox" class="sub"></span>
@@ -312,6 +313,26 @@
   </div>
 </div>
 
+<!-- Monitoring overlay -->
+<div class="overlay" id="monitorOverlay">
+  <div class="modal" style="max-width:760px">
+    <h2>📡 Monitoring</h2>
+    <p class="muted">Watch a target on a schedule — ReconMind re-runs recon every N hours in the
+      background and highlights what's <b style="color:var(--accent)">new</b> (subdomains, live hosts,
+      endpoints, takeover candidates) since the last run. New attack surface is where fresh bugs show up.
+      Runs only while the server is up.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0 14px">
+      <input type="text" id="monDomain" placeholder="target.com" style="flex:1;min-width:200px">
+      <input type="text" id="monInterval" value="24" title="hours between runs" style="width:64px">
+      <span class="muted">hours</span>
+      <label class="chk"><input type="checkbox" id="monDeep"> deep</label>
+      <button id="monAdd">＋ Watch</button>
+    </div>
+    <div id="monList"></div>
+    <div class="modalbtns"><button class="ghost" id="monClose">Close</button></div>
+  </div>
+</div>
+
 <!-- Login / register overlay (only shown when the server requires auth) -->
 <div class="overlay" id="loginOverlay">
   <div class="modal" style="max-width:380px">
@@ -380,6 +401,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=17"></script>
+<script src="/static/app.js?v=18"></script>
 </body>
 </html>

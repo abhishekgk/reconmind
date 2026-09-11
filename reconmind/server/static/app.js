@@ -1038,8 +1038,40 @@ async function saveScope(){
   }catch(e){ $("scopeMsg").textContent="Save failed."; }
 }
 
+// ---------- monitoring ----------
+async function openMonitor(){ await renderMonitors(); $("monitorOverlay").classList.add("show"); }
+async function renderMonitors(){
+  let data; try{ data=await (await fetch("/api/monitors")).json(); }catch(e){ return; }
+  const running=new Set(data.running||[]); const ms=data.monitors||[];
+  $("monList").innerHTML = ms.length ? ms.map(m=>{
+    const nc=m.new_counts||{};
+    const totalNew=(nc.subdomains||0)+(nc.live||0)+(nc.endpoints||0)+(nc.takeovers||0);
+    const last=m.last_run?new Date(m.last_run*1000).toLocaleString():"never";
+    const st=running.has(m.id)?'<span style="color:var(--warn)">running…</span>':(m.last_status==="error"?'<span style="color:var(--bad)">error</span>':esc(m.last_status||""));
+    const badges = m.last_run ? (totalNew?`<span class="newbadge">+${nc.subdomains||0} subs</span> <span class="newbadge">+${nc.live||0} live</span> <span class="newbadge">+${nc.endpoints||0} eps</span>${nc.takeovers?` <span class="tobadge high">+${nc.takeovers} takeover</span>`:''}`:'<span class="muted">no changes</span>') : '';
+    return `<div class="histrow"><div>
+      <div class="hd">${esc(m.domain)} <span class="muted">· every ${esc(String(m.interval_hours))}h${m.deep?' · deep':''}</span></div>
+      <div class="hc">${m.active?'<span class="yes">● active</span>':'<span class="no">○ paused</span>'} · last: ${esc(last)} · ${st} ${badges}${m.error?` <span style="color:var(--bad)">${esc(m.error)}</span>`:''}</div>
+      </div><div style="display:flex;gap:6px">
+      <button class="ghost sm" data-run="${m.id}" ${running.has(m.id)?'disabled':''}>Run now</button>
+      <button class="ghost sm" data-tgl="${m.id}">${m.active?'Pause':'Resume'}</button>
+      <button class="ghost sm" data-del="${m.id}" style="color:var(--bad)">🗑</button>
+    </div></div>`;
+  }).join("") : `<p class="muted">No monitors yet. Add a target above to start watching it.</p>`;
+  $("monList").querySelectorAll("[data-run]").forEach(b=>b.onclick=async()=>{ b.disabled=true; b.textContent="starting…"; try{await fetch(`/api/monitors/${b.dataset.run}/run`,{method:"POST"});}catch(e){} setTimeout(renderMonitors,1500); });
+  $("monList").querySelectorAll("[data-tgl]").forEach(b=>b.onclick=async()=>{ try{await fetch(`/api/monitors/${b.dataset.tgl}/toggle`,{method:"POST"});}catch(e){} renderMonitors(); });
+  $("monList").querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{ if(!confirm("Stop watching this target?"))return; try{await fetch(`/api/monitors/${b.dataset.del}`,{method:"DELETE"});}catch(e){} renderMonitors(); });
+}
+async function addMonitor(){
+  const domain=$("monDomain").value.trim(); if(!domain){ $("monDomain").focus(); return; }
+  const interval=parseFloat($("monInterval").value)||24; const deep=$("monDeep").checked;
+  const r=await fetch("/api/monitors",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({domain,interval_hours:interval,deep})});
+  if(!r.ok){ const e=await r.json().catch(()=>({})); alert(e.detail||"Could not add monitor."); return; }
+  $("monDomain").value=""; renderMonitors();
+}
+
 // ---------- boot ----------
-function startApp(){ if(_appStarted) return; _appStarted=true; loadTools(); loadLlm(); loadModels(); setInterval(loadLlm,15000); }
+function startApp(){ if(_appStarted) return; _appStarted=true; loadTools(); loadLlm(); loadModels(); setInterval(loadLlm,15000); setInterval(()=>{ if($("monitorOverlay").classList.contains("show")) renderMonitors(); }, 5000); }
 async function boot(){ if(await initAuth()) startApp(); }
 
 // ---------- wire up ----------
@@ -1068,6 +1100,9 @@ $("diffOverlay").onclick=(e)=>{ if(e.target===$("diffOverlay")) $("diffOverlay")
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); t.classList.add("active"); activeTab=t.dataset.tab; try{history.replaceState(null,"","#"+activeTab);}catch(e){} render(); });
 // Deep-link / bookmark a tab via the URL hash (e.g. …/#fuzzer opens the Fuzzer).
 (function initTabFromHash(){ const h=(location.hash||"").slice(1); const el=h&&document.querySelector('.tab[data-tab="'+h+'"]'); if(el){ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); el.classList.add("active"); activeTab=h; render(); } })();
+$("monitorBtn").onclick=openMonitor; $("monClose").onclick=()=>$("monitorOverlay").classList.remove("show"); $("monAdd").onclick=addMonitor;
+$("monDomain").addEventListener("keydown",e=>{ if(e.key==="Enter") addMonitor(); });
+$("monitorOverlay").onclick=(e)=>{ if(e.target===$("monitorOverlay")) $("monitorOverlay").classList.remove("show"); };
 $("scopeBtn").onclick=openScope; $("scopeClose").onclick=()=>$("scopeOverlay").classList.remove("show"); $("scopeSave").onclick=saveScope;
 $("scopeOverlay").onclick=(e)=>{ if(e.target===$("scopeOverlay")) $("scopeOverlay").classList.remove("show"); };
 $("authSubmit").onclick=doAuthSubmit; $("authToggle").onclick=toggleAuthMode;
