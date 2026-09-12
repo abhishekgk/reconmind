@@ -188,6 +188,7 @@
     <button class="ghost" id="importBtn">⬆ Import</button>
     <button class="ghost" id="historyBtn">🕘 History</button>
     <button class="ghost" id="enumBtn" title="run content discovery across many live hosts at once">⚡ Enumerate</button>
+    <button class="ghost" id="portsBtn" title="scan ports on the scan's IPs / live hosts">🔌 Ports</button>
     <button class="ghost" id="monitorBtn" title="scheduled re-scans + change alerts">📡 Monitor</button>
     <button class="ghost" id="scopeBtn" title="scope allow-list — restrict which targets can be scanned">🎯 Scope</button>
     <button class="ghost" id="keysBtn">⚙ API keys</button>
@@ -312,6 +313,50 @@
     <div class="modalbtns">
       <button class="ghost" id="diffExport" style="margin-right:auto">⬇ Export diff (.md)</button>
       <button class="ghost" id="diffClose">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Ports overlay -->
+<div class="overlay" id="portsOverlay">
+  <div class="modal" style="max-width:820px">
+    <h2>🔌 Ports</h2>
+    <p class="muted">Scan ports on chosen targets — pick the ports, engine and hosts. Results merge into
+      the <b>IPs &amp; Services</b> tab (nmap adds service/version).</p>
+    <div id="portsNeedScan" class="muted" hidden>Run or load a scan first — port scanning uses its resolved IPs &amp; live hosts.</div>
+    <div id="portsBody">
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px">
+          <div class="small">targets <span id="ptCount"></span> —
+            <a href="#" id="ptAll">all</a> · <a href="#" id="ptIps">IPs only</a> · <a href="#" id="ptNone">none</a></div>
+          <div id="ptTargets" style="max-height:250px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-top:6px;font-size:12px"></div>
+        </div>
+        <div style="width:300px">
+          <label class="fl" style="display:block">ports<select id="ptPreset" class="modelsel" style="width:100%;max-width:none">
+            <option value="top100">Top 100</option>
+            <option value="top1000">Top 1000</option>
+            <option value="web">Web ports</option>
+            <option value="full">Full (1–65535)</option>
+            <option value="custom">Custom…</option></select></label>
+          <input type="text" id="ptCustom" placeholder="80,443,8000-9000" style="width:100%;margin-top:6px;display:none">
+          <label class="fl" style="display:block;margin-top:8px">engine<select id="ptEngine" class="modelsel" style="width:100%;max-width:none">
+            <option value="naabu">naabu (fast · no root)</option>
+            <option value="nmap">nmap (service/version)</option>
+            <option value="masscan">masscan (needs root)</option></select></label>
+          <label class="chk" id="ptSvcWrap" style="margin-top:8px;display:none"><input type="checkbox" id="ptService"> service/version (-sV)</label>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+            <label class="fl">rate<input type="text" id="ptRate" value="1000" style="width:70px"></label>
+            <label class="fl">concurrency<input type="text" id="ptConc" value="50" style="width:70px"></label>
+            <label class="fl">max s<input type="text" id="ptDeadline" value="300" style="width:64px"></label>
+          </div>
+        </div>
+      </div>
+      <div class="phase" id="ptPhase" style="margin-top:10px"></div>
+      <div id="ptOut"></div>
+    </div>
+    <div class="modalbtns">
+      <button class="ghost" id="portsClose">Close</button>
+      <button id="ptStart" class="warn" style="background:var(--accent2);color:#04121f">▶ Scan ports</button>
     </div>
   </div>
 </div>
@@ -470,6 +515,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=21"></script>
+<script src="/static/app.js?v=22"></script>
 </body>
 </html>

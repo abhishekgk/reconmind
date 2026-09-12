@@ -1141,6 +1141,50 @@ async function addMonitor(){
   $("monDomain").value=""; renderMonitors();
 }
 
+// ---------- port scanning (🔌 Ports panel) ----------
+let PORT = { rows:[] };
+async function openPorts(){
+  const ips=(scanData&&scanData.ip_assets?scanData.ip_assets.map(r=>r.ip):[]);
+  const hosts=(scanData&&scanData.hosts?scanData.hosts.filter(h=>h.live&&h.host).map(h=>h.host):[]);
+  const items=ips.map(ip=>({v:ip,ip:true})).concat(hosts.map(h=>({v:h,ip:false})));
+  const has=items.length>0;
+  $("portsNeedScan").hidden=has; $("portsBody").style.display=has?"":"none"; $("ptStart").disabled=!has;
+  $("ptCount").textContent=`(${items.length})`;
+  $("ptTargets").innerHTML = has ? items.map(it=>`<label class="chk" style="display:flex;gap:6px"><input type="checkbox" class="ptt" data-v="${esc(it.v)}" data-ip="${it.ip?1:0}" ${it.ip?"checked":""}> <span class="mono">${esc(it.v)}</span> <span class="tag">${it.ip?"IP":"host"}</span></label>`).join("") : '<span class="muted">no IPs or live hosts in this scan</span>';
+  PORT.rows=[]; $("ptOut").innerHTML=""; $("ptPhase").textContent="";
+  $("ptCustom").style.display = $("ptPreset").value==="custom"?"":"none";
+  $("ptSvcWrap").style.display = $("ptEngine").value==="nmap"?"flex":"none";
+  $("portsOverlay").classList.add("show");
+}
+function ptSelected(){ return Array.from(document.querySelectorAll(".ptt:checked")).map(c=>c.dataset.v); }
+function resetPt(){ $("ptStart").disabled=false; $("ptStart").textContent="▶ Scan ports"; }
+let ptPending=false; function schedulePtRender(){ if(ptPending)return; ptPending=true; setTimeout(()=>{ptPending=false; renderPortResults();},300); }
+function renderPortResults(){
+  const out=$("ptOut"); if(!out) return;
+  if(!PORT.rows.length){ out.innerHTML=`<p class="muted" style="margin-top:8px">${$("ptStart").disabled?"scanning… open ports stream in here.":"No open ports yet."}</p>`; return; }
+  const rows=PORT.rows.slice().sort((a,b)=>(a.ip||"").localeCompare(b.ip||"")||(a.port-b.port));
+  out.innerHTML=`<div class="muted" style="margin:6px 0">${PORT.rows.length} open port(s)</div><table><thead><tr><th>IP</th><th>Port</th><th>Service / version</th><th>Engine</th></tr></thead><tbody>`+
+    rows.slice(0,2000).map(r=>`<tr><td class="mono">${esc(r.ip)}${r.host&&r.host!==r.ip?` <span class="muted">(${esc(r.host)})</span>`:''}</td><td><span class="port">${r.port}</span></td><td class="muted">${esc(r.product||r.service||"")}</td><td><span class="tag">${esc(r.source)}</span></td></tr>`).join("")+`</tbody></table>`;
+}
+async function startPorts(){
+  const targets=ptSelected(); if(!targets.length){ $("ptPhase").textContent="⚠ select at least one target"; return; }
+  const body={ scan_id:currentScanId, targets, engine:$("ptEngine").value, preset:$("ptPreset").value,
+    ports:$("ptCustom").value, rate:parseInt($("ptRate").value)||1000, concurrency:parseInt($("ptConc").value)||50,
+    service:$("ptService").checked, deadline:parseInt($("ptDeadline").value)||300 };
+  PORT.rows=[]; $("ptStart").disabled=true; $("ptStart").textContent="scanning…"; $("ptPhase").textContent="▸ starting…"; renderPortResults();
+  let r; try{ r=await (await fetch("/api/ports",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json(); }catch(e){ $("ptPhase").textContent="⚠ failed to start"; resetPt(); return; }
+  if(!r.job_id){ $("ptPhase").textContent="⚠ "+(r.detail||"failed to start"); resetPt(); return; }
+  $("ptPhase").textContent=`▸ scanning ${r.targets} target(s)…`;
+  const es=new EventSource(`/api/ports/${r.job_id}/events`);
+  es.onmessage=(e)=>{ const ev=JSON.parse(e.data);
+    if(ev.kind==="phase") $("ptPhase").textContent="▸ "+ev.phase;
+    else if(ev.kind==="result"){ PORT.rows.push(ev.row); schedulePtRender(); }
+    else if(ev.kind==="done"){ es.close(); resetPt(); $("ptPhase").textContent=`✓ done — ${ev.ports} open port(s) on ${ev.ips} IP(s)${ev.saved?" · merged into IPs & Services":""}`; renderPortResults(); if(ev.saved) refreshFindings(); }
+    else if(ev.kind==="error"){ es.close(); resetPt(); $("ptPhase").textContent="⚠ "+(ev.message||"error"); }
+  };
+  es.onerror=()=>{ es.close(); resetPt(); if(!$("ptPhase").textContent.startsWith("✓")) $("ptPhase").textContent="▸ stream ended"; };
+}
+
 // ---------- multi-host Enumerate ----------
 async function openEnumerate(){
   const live=(scanData&&scanData.hosts?scanData.hosts.filter(h=>h.live&&h.url):[]);
@@ -1210,6 +1254,13 @@ $("diffOverlay").onclick=(e)=>{ if(e.target===$("diffOverlay")) $("diffOverlay")
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); t.classList.add("active"); activeTab=t.dataset.tab; try{history.replaceState(null,"","#"+activeTab);}catch(e){} render(); });
 // Deep-link / bookmark a tab via the URL hash (e.g. …/#fuzzer opens the Fuzzer).
 (function initTabFromHash(){ const h=(location.hash||"").slice(1); const el=h&&document.querySelector('.tab[data-tab="'+h+'"]'); if(el){ document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active")); el.classList.add("active"); activeTab=h; render(); } })();
+$("portsBtn").onclick=openPorts; $("portsClose").onclick=()=>$("portsOverlay").classList.remove("show"); $("ptStart").onclick=startPorts;
+$("portsOverlay").onclick=(e)=>{ if(e.target===$("portsOverlay")) $("portsOverlay").classList.remove("show"); };
+$("ptPreset").onchange=()=>{ $("ptCustom").style.display=$("ptPreset").value==="custom"?"":"none"; };
+$("ptEngine").onchange=()=>{ $("ptSvcWrap").style.display=$("ptEngine").value==="nmap"?"flex":"none"; };
+$("ptAll").onclick=(e)=>{ e.preventDefault(); document.querySelectorAll(".ptt").forEach(c=>c.checked=true); };
+$("ptIps").onclick=(e)=>{ e.preventDefault(); document.querySelectorAll(".ptt").forEach(c=>c.checked=c.dataset.ip==="1"); };
+$("ptNone").onclick=(e)=>{ e.preventDefault(); document.querySelectorAll(".ptt").forEach(c=>c.checked=false); };
 $("enumBtn").onclick=openEnumerate; $("enumClose").onclick=()=>$("enumOverlay").classList.remove("show"); $("enumStart").onclick=startEnumerate;
 $("enumOverlay").onclick=(e)=>{ if(e.target===$("enumOverlay")) $("enumOverlay").classList.remove("show"); };
 $("enumSelAll").onclick=(e)=>{ e.preventDefault(); document.querySelectorAll(".enh").forEach(c=>c.checked=true); };

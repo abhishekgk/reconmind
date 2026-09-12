@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 from .. import auth, config, keys, llm, monitor, report, scope, store, tools
 from ..recon import fuzzer, nuclei
+from ..recon import ports as portscan
 from ..recon.crawl import crawl as run_crawl
 from ..recon.orchestrator import Scan, run_scan
 
@@ -174,6 +175,19 @@ class EnumerateRequest(BaseModel):
     host_concurrency: int = 3
 
 
+class PortScanRequest(BaseModel):
+    """UI-driven port scan (the 🔌 Ports panel)."""
+    scan_id: str | None = None
+    targets: list[str] = []
+    engine: str = "naabu"                 # naabu | nmap | masscan
+    preset: str = "top100"                # top100 | top1000 | web | full | custom
+    ports: str = ""                       # custom spec, e.g. "80,443,8000-9000"
+    rate: int = 1000
+    concurrency: int = 50
+    service: bool = False                 # nmap -sV service/version
+    deadline: int = 300
+
+
 # In-memory crawl jobs (id -> {queue, status}). A crawl runs against an already
 # loaded scan (live, imported, or from history) and fills its Endpoints tab.
 CRAWL_JOBS: dict[str, dict] = {}
@@ -187,6 +201,42 @@ NUCLEI_JOBS: dict[str, dict] = {}
 
 # In-memory enumerate jobs (id -> {queue, status, content, params}).
 ENUM_JOBS: dict[str, dict] = {}
+
+# In-memory port-scan jobs.
+PORT_JOBS: dict[str, dict] = {}
+
+
+def _merge_ports(scan, results: dict) -> bool:
+    """Merge port-scan results ({ip: {ports, services}}) into a scan's IP assets,
+    for both a live Scan (scan.ips) and a LoadedScan (_data['ip_assets'])."""
+    if not results:
+        return False
+    if isinstance(scan, LoadedScan):
+        rows = scan._data.setdefault("ip_assets", [])
+        by_ip = {r["ip"]: r for r in rows}
+        for ip, info in results.items():
+            row = by_ip.get(ip)
+            if not row:
+                row = {"ip": ip, "asn": "", "org": "", "prefix": "", "ptr": "",
+                       "ports": [], "services": []}
+                rows.append(row)
+                by_ip[ip] = row
+            row["ports"] = sorted(set(row.get("ports", [])) | set(info["ports"]))
+            have = {s.get("port") for s in row.get("services", [])}
+            for s in info.get("services", []):
+                if s.get("port") not in have:
+                    row.setdefault("services", []).append(s)
+        scan._data.setdefault("counts", {})["ips"] = len(rows)
+    else:
+        for ip, info in results.items():
+            d = scan.ips.setdefault(ip, {})
+            d["ports"] = sorted(set(d.get("ports", [])) | set(info["ports"]))
+            have = {s.get("port") for s in d.get("services", [])}
+            for s in info.get("services", []):
+                if s.get("port") not in have:
+                    d.setdefault("services", []).append(s)
+    _persist(scan)
+    return True
 
 # Monitors currently mid-run, so the scheduler never double-launches one.
 _MON_RUNNING: set[str] = set()
@@ -929,6 +979,72 @@ async def api_enumerate_events(job_id: str):
     job = ENUM_JOBS.get(job_id)
     if not job:
         raise HTTPException(404, "enumerate job not found")
+    queue = job["queue"]
+
+    async def stream():
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=30)
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+                if job["status"] == "done":
+                    break
+                continue
+            yield f"data: {json.dumps(event)}\n\n"
+            if event["kind"] in ("done", "error"):
+                break
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@app.post("/api/ports")
+async def api_ports(req: PortScanRequest):
+    """Scan ports on chosen targets; results stream over SSE and merge into the
+    loaded scan's IPs & Services."""
+    targets = [t.strip() for t in req.targets if t and t.strip()]
+    if not targets:
+        raise HTTPException(400, "Select at least one target to scan.")
+    oos = scope.out_of_scope(targets)
+    if oos:
+        shown = ", ".join(oos[:5]) + ("…" if len(oos) > 5 else "")
+        raise HTTPException(400, f"{len(oos)} target(s) out of scope: {shown}.")
+
+    job_id = uuid.uuid4().hex[:12]
+    queue: asyncio.Queue = asyncio.Queue()
+    PORT_JOBS[job_id] = {"queue": queue, "status": "running"}
+    opts = req.model_dump()
+    opts["targets"] = targets
+
+    async def _run():
+        try:
+            def on_result(row):
+                queue.put_nowait({"kind": "result", "row": row})
+
+            def on_progress(msg):
+                queue.put_nowait({"kind": "phase", "phase": msg})
+
+            results = await portscan.run_port_scan(opts, on_result=on_result,
+                                                   on_progress=on_progress)
+            saved = _merge_ports(SCANS[req.scan_id], results) if (req.scan_id and req.scan_id in SCANS) else False
+            open_ports = sum(len(v["ports"]) for v in results.values())
+            queue.put_nowait({"kind": "done", "ips": len(results),
+                              "ports": open_ports, "saved": saved})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            queue.put_nowait({"kind": "error", "message": str(e)})
+        finally:
+            PORT_JOBS[job_id]["status"] = "done"
+
+    _spawn(_run())
+    return {"job_id": job_id, "targets": len(targets)}
+
+
+@app.get("/api/ports/{job_id}/events")
+async def api_ports_events(job_id: str):
+    job = PORT_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "port job not found")
     queue = job["queue"]
 
     async def stream():
