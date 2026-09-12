@@ -209,6 +209,7 @@ async def _run_monitor(m: dict) -> None:
         counts, items = monitor.diff_new(data, prev)
         monitor.update(mid, last_run=time.time(), last_status="done",
                        last_file=p.name, new_counts=counts, new_items=items, error=None)
+        await monitor.notify(domain, counts)   # webhook alert if new + configured
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -347,6 +348,37 @@ async def api_auth_logout(request: Request):
     return resp
 
 
+class AuthToggleRequest(BaseModel):
+    on: bool = False
+
+
+@app.post("/api/auth/toggle")
+async def api_auth_toggle(req: AuthToggleRequest):
+    auth.set_enabled(req.on)
+    return {"enabled": auth.enabled()}
+
+
+@app.get("/api/auth/users")
+async def api_auth_users():
+    return {"enabled": auth.enabled(), "users": auth.list_users()}
+
+
+@app.post("/api/auth/users")
+async def api_auth_add_user(req: AuthRequest):
+    ok, msg = auth.add_user(req.username, req.password)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True}
+
+
+@app.delete("/api/auth/users/{username}")
+async def api_auth_remove_user(username: str):
+    ok, msg = auth.remove_user(username)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True}
+
+
 # --- Scope allow-list ---------------------------------------------------------
 
 class ScopeRequest(BaseModel):
@@ -373,7 +405,18 @@ class MonitorRequest(BaseModel):
 
 @app.get("/api/monitors")
 async def api_monitors():
-    return {"monitors": monitor.list_monitors(), "running": sorted(_MON_RUNNING)}
+    return {"monitors": monitor.list_monitors(), "running": sorted(_MON_RUNNING),
+            "webhook": monitor.get_webhook()}
+
+
+class WebhookRequest(BaseModel):
+    url: str = ""
+
+
+@app.post("/api/monitors/webhook")
+async def api_set_webhook(req: WebhookRequest):
+    """Set the alert webhook (Slack/Discord/generic) for monitor 'new' events."""
+    return {"webhook": monitor.set_webhook(req.url)}
 
 
 @app.post("/api/monitors")

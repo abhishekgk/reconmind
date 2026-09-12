@@ -191,6 +191,7 @@
     <button class="ghost" id="monitorBtn" title="scheduled re-scans + change alerts">📡 Monitor</button>
     <button class="ghost" id="scopeBtn" title="scope allow-list — restrict which targets can be scanned">🎯 Scope</button>
     <button class="ghost" id="keysBtn">⚙ API keys</button>
+    <button class="ghost" id="authAdminBtn" title="authentication &amp; users (for hosting)">🔒 Auth</button>
     <span id="authBox" class="sub"></span>
     <input type="file" id="importFile" accept="application/json,.json" style="display:none">
   </span>
@@ -368,8 +369,36 @@
       <label class="chk"><input type="checkbox" id="monDeep"> deep</label>
       <button id="monAdd">＋ Watch</button>
     </div>
+    <div style="display:flex;gap:8px;align-items:center;margin:0 0 14px">
+      <input type="text" id="monWebhook" placeholder="alert webhook (Slack/Discord/generic) — optional" style="flex:1;min-width:220px">
+      <button class="ghost sm" id="monWebhookSave">Save</button>
+      <span class="muted" id="monWebhookMsg"></span>
+    </div>
     <div id="monList"></div>
     <div class="modalbtns"><button class="ghost" id="monClose">Close</button></div>
+  </div>
+</div>
+
+<!-- Auth admin overlay -->
+<div class="overlay" id="authAdminOverlay">
+  <div class="modal" style="max-width:540px">
+    <h2>🔒 Authentication</h2>
+    <p class="muted">Require a login to use ReconMind (for hosting). Accounts share one workspace —
+      auth is a gate, not per-user isolation. Sessions are in-memory (a server restart logs everyone out).</p>
+    <div class="histrow"><div><div class="hd">Status: <span id="authState"></span></div>
+      <div class="hc" id="authStateNote"></div></div>
+      <button class="ghost sm" id="authToggleBtn"></button></div>
+    <div id="authUsersWrap">
+      <h3 style="margin-top:14px">Users</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 10px">
+        <input type="text" id="auNewUser" placeholder="username" style="flex:1;min-width:130px">
+        <input type="password" id="auNewPass" placeholder="password (8+ chars)" style="flex:1;min-width:130px">
+        <button id="auAddBtn">＋ Add</button>
+      </div>
+      <div id="auUserList"></div>
+    </div>
+    <div class="muted" id="authAdminMsg" style="min-height:16px;margin-top:8px"></div>
+    <div class="modalbtns"><button class="ghost" id="authAdminClose">Close</button></div>
   </div>
 </div>
 
@@ -441,6 +470,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=20"></script>
+<script src="/static/app.js?v=21"></script>
 </body>
 </html>

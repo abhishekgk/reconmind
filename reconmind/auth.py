@@ -157,3 +157,41 @@ def session_user(token: str | None) -> str | None:
 def destroy_session(token: str | None) -> None:
     if token:
         _SESSIONS.pop(token, None)
+
+
+# --- admin: manage accounts (shared-workspace, so any logged-in user can) -----
+
+def list_users() -> list[dict]:
+    return [{"username": u, "created": v.get("created")}
+            for u, v in sorted(_load().get("users", {}).items())]
+
+
+def add_user(username: str, password: str) -> tuple[bool, str]:
+    """Admin-add an account (bypasses the bootstrap-only registration gate)."""
+    username = _norm(username)
+    if not username or not password:
+        return False, "username and password are required"
+    if len(username) > 64 or len(password) < 8:
+        return False, "password must be at least 8 characters"
+    d = _load()
+    users = d.setdefault("users", {})
+    if username in users:
+        return False, "that username is already taken"
+    salt = secrets.token_bytes(16)
+    users[username] = {"salt": salt.hex(), "hash": _hash(password, salt),
+                       "created": time.time()}
+    _save(d)
+    return True, ""
+
+
+def remove_user(username: str) -> tuple[bool, str]:
+    username = _norm(username)
+    d = _load()
+    users = d.get("users", {})
+    if username not in users:
+        return False, "no such user"
+    if len(users) <= 1 and enabled():
+        return False, "can't remove the last account while auth is on — you'd lock yourself out"
+    users.pop(username, None)
+    _save(d)
+    return True, ""

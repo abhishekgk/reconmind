@@ -1068,8 +1068,49 @@ async function saveScope(){
   }catch(e){ $("scopeMsg").textContent="Save failed."; }
 }
 
+// ---------- auth admin (toggle + manage users) ----------
+async function refreshAuthBox(){ try{ const s=await (await _origFetch("/api/auth/status")).json(); AUTH_REQUIRED=!!s.auth_required; renderAuthBox(s); }catch(e){} }
+async function openAuthAdmin(){ await renderAuthAdmin(); $("authAdminMsg").textContent=""; $("authAdminOverlay").classList.add("show"); }
+async function renderAuthAdmin(){
+  let d; try{ d=await (await fetch("/api/auth/users")).json(); }catch(e){ d={enabled:false,users:[]}; }
+  const on=!!d.enabled;
+  $("authState").innerHTML = on?'<span class="yes">● ON</span>':'<span class="no">○ OFF</span>';
+  $("authStateNote").textContent = on?"Login required on every API route.":"Open — anyone who can reach this URL can use it.";
+  $("authToggleBtn").textContent = on?"Turn OFF":"Turn ON";
+  $("authUsersWrap").style.display = on?"":"none";
+  $("auUserList").innerHTML = (d.users||[]).length ? (d.users||[]).map(u=>`<div class="histrow"><div class="hd">👤 ${esc(u.username)}</div><button class="ghost sm" data-rmuser="${esc(u.username)}" style="color:var(--bad)">remove</button></div>`).join("") : '<p class="muted">No accounts yet.</p>';
+  $("auUserList").querySelectorAll("[data-rmuser]").forEach(b=>b.onclick=()=>removeUser(b.dataset.rmuser));
+}
+async function toggleAuth(){
+  const on=$("authState").textContent.includes("ON");
+  if(on && !confirm("Turn authentication OFF? Anyone who can reach this server will be able to use it.")) return;
+  try{ await fetch("/api/auth/toggle",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({on:!on})}); }catch(e){}
+  await renderAuthAdmin(); await refreshAuthBox();
+  $("authAdminMsg").textContent = on ? "Auth is OFF." : "Auth is ON. If you have no account yet, add one below (or close & refresh to register).";
+}
+async function addUser(){
+  const u=$("auNewUser").value.trim(), p=$("auNewPass").value;
+  if(!u||!p){ $("authAdminMsg").textContent="Enter a username and password."; return; }
+  const r=await fetch("/api/auth/users",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:p})});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok){ $("authAdminMsg").textContent=d.detail||"Could not add user."; return; }
+  $("auNewUser").value=""; $("auNewPass").value=""; $("authAdminMsg").textContent="✓ user added."; renderAuthAdmin();
+}
+async function removeUser(username){
+  if(!confirm(`Remove account "${username}"?`)) return;
+  const r=await fetch(`/api/auth/users/${encodeURIComponent(username)}`,{method:"DELETE"});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok){ $("authAdminMsg").textContent=d.detail||"Could not remove."; return; }
+  $("authAdminMsg").textContent="✓ removed."; renderAuthAdmin();
+}
+
 // ---------- monitoring ----------
-async function openMonitor(){ await renderMonitors(); $("monitorOverlay").classList.add("show"); }
+async function saveWebhook(){
+  const url=$("monWebhook").value.trim();
+  try{ await fetch("/api/monitors/webhook",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url})}); $("monWebhookMsg").textContent=url?"✓ saved":"cleared"; setTimeout(()=>$("monWebhookMsg").textContent="",1500); }
+  catch(e){ $("monWebhookMsg").textContent="save failed"; }
+}
+async function openMonitor(){ await renderMonitors(); try{ const d=await (await fetch("/api/monitors")).json(); $("monWebhook").value=d.webhook||""; }catch(e){} $("monitorOverlay").classList.add("show"); }
 async function renderMonitors(){
   let data; try{ data=await (await fetch("/api/monitors")).json(); }catch(e){ return; }
   const running=new Set(data.running||[]); const ms=data.monitors||[];
@@ -1174,6 +1215,9 @@ $("enumOverlay").onclick=(e)=>{ if(e.target===$("enumOverlay")) $("enumOverlay")
 $("enumSelAll").onclick=(e)=>{ e.preventDefault(); document.querySelectorAll(".enh").forEach(c=>c.checked=true); };
 $("enumSel2xx").onclick=(e)=>{ e.preventDefault(); document.querySelectorAll(".enh").forEach(c=>c.checked=c.dataset.x2==="1"); };
 $("enumSelNone").onclick=(e)=>{ e.preventDefault(); document.querySelectorAll(".enh").forEach(c=>c.checked=false); };
+$("authAdminBtn").onclick=openAuthAdmin; $("authAdminClose").onclick=()=>$("authAdminOverlay").classList.remove("show"); $("authToggleBtn").onclick=toggleAuth; $("auAddBtn").onclick=addUser;
+$("authAdminOverlay").onclick=(e)=>{ if(e.target===$("authAdminOverlay")) $("authAdminOverlay").classList.remove("show"); };
+$("monWebhookSave").onclick=saveWebhook;
 $("monitorBtn").onclick=openMonitor; $("monClose").onclick=()=>$("monitorOverlay").classList.remove("show"); $("monAdd").onclick=addMonitor;
 $("monDomain").addEventListener("keydown",e=>{ if(e.key==="Enter") addMonitor(); });
 $("monitorOverlay").onclick=(e)=>{ if(e.target===$("monitorOverlay")) $("monitorOverlay").classList.remove("show"); };

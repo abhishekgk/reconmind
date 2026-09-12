@@ -18,7 +18,48 @@ import uuid
 from . import config, store
 
 MON_FILE = config.DATA_DIR.parent / "monitors.json"
+SETTINGS_FILE = config.DATA_DIR.parent / "settings.json"
 _ITEM_CAP = 300
+
+
+def _settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def get_webhook() -> str:
+    return _settings().get("monitor_webhook", "") or ""
+
+
+def set_webhook(url: str) -> str:
+    s = _settings()
+    s["monitor_webhook"] = (url or "").strip()
+    try:
+        SETTINGS_FILE.write_text(json.dumps(s, indent=2))
+    except OSError:
+        pass
+    return s["monitor_webhook"]
+
+
+async def notify(domain: str, counts: dict, webhook: str | None = None) -> None:
+    """POST a 'new assets found' message to the configured webhook. One payload
+    shape works for Slack ("text") and Discord ("content"); extra keys are
+    ignored by both, so a generic endpoint gets structured data too."""
+    url = webhook if webhook is not None else get_webhook()
+    total = sum(counts.values()) if counts else 0
+    if not url or total <= 0:
+        return
+    parts = [f"+{v} {k}" for k, v in counts.items() if v]
+    msg = f"🔭 ReconMind: {total} new on {domain} — " + ", ".join(parts)
+    payload = {"text": msg, "content": msg, "domain": domain, "new": counts}
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(url, json=payload)
+    except Exception:
+        pass
 
 
 def _load() -> dict:
