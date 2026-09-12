@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .. import auth, config, keys, llm, monitor, report, scope, store, tools
+from .. import auth, config, keys, llm, monitor, profiles, report, scope, store, tools
 from ..recon import fuzzer, nuclei
 from ..recon import ports as portscan
 from ..recon.crawl import crawl as run_crawl
@@ -129,6 +129,7 @@ class FuzzRequest(BaseModel):
     url: str
     tool: str = "ffuf"
     wordlist: str = ""
+    wordlist2: str = ""               # optional 2nd wordlist for multi-FUZZ (FUZ2)
     method: str = "GET"
     headers: list[dict] = []          # [{name, value}, ...]
     extensions: str = ""              # "php,txt,bak" or ".php,.txt"
@@ -724,6 +725,32 @@ async def api_crawl_events(job_id: str):
                 break
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+class ProfileRequest(BaseModel):
+    kind: str = "fuzz"        # fuzz | nuclei
+    name: str = ""
+    config: dict = {}
+
+
+@app.get("/api/profiles")
+async def api_profiles():
+    return profiles.list_profiles()
+
+
+@app.post("/api/profiles")
+async def api_save_profile(req: ProfileRequest):
+    ok, msg = profiles.save_profile(req.kind, req.name, req.config)
+    if not ok:
+        raise HTTPException(400, msg)
+    return {"ok": True}
+
+
+@app.delete("/api/profiles/{kind}/{name}")
+async def api_delete_profile(kind: str, name: str):
+    if not profiles.delete_profile(kind, name):
+        raise HTTPException(404, "profile not found")
+    return {"ok": True}
 
 
 @app.get("/api/wordlists")

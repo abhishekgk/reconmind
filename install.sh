@@ -69,6 +69,7 @@ if command -v go >/dev/null 2>&1; then
       # --- Fuzzer tab (content discovery) ---
       "github.com/ffuf/ffuf/v2@latest"
       "github.com/OJ/gobuster/v3@latest"
+      "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
     )
     for t in "${GOTOOLS[@]}"; do
       info "go install $t"

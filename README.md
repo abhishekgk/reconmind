@@ -177,6 +177,9 @@ go install github.com/sensepost/gowitness@latest        # screenshots (needs Chr
 # Fuzzer tab (content discovery) — pick your engine in the tool dropdown
 go install github.com/ffuf/ffuf/v2@latest
 go install github.com/OJ/gobuster/v3@latest
+# Nuclei tab (template vuln scanning) + Ports tab (naabu; nmap/masscan optional)
+go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
+go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
 ```
 
 Extra fuzzers (optional; ffuf + gobuster already cover most needs): `feroxbuster`

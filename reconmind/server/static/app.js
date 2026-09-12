@@ -631,7 +631,7 @@ function exportDiff(){
 // Fuzzer tab — Postman-style manual content discovery
 // ========================================================================
 let FUZZ = {
-  method:"GET", url:"", tool:"", wordlist:"", extensions:"", match_codes:"",
+  method:"GET", url:"", tool:"", wordlist:"", wordlist2:"", extensions:"", match_codes:"",
   filter_codes:"404", threads:40, rps:0, recursion:0, quick_wins:false, data:"",
   headers:[{name:"",value:""}], rows:[], exposures:[], running:false,
   jobId:null, es:null, filter:"", statusFacet:new Set(),
@@ -661,11 +661,11 @@ function populateFuzzSelects(){
     tsel.innerHTML=(FUZZ_META.tools.tools||[]).map(t=>`<option value="${esc(t.name)}" ${t.available?"":"disabled"}>${esc(t.name)}${t.available?"":" — not installed"}</option>`).join("");
     if(FUZZ.tool) tsel.value=FUZZ.tool; if(tsel.selectedIndex<0||tsel.value!==FUZZ.tool){ const first=(FUZZ_META.tools.tools||[]).find(t=>t.available); if(first){ tsel.value=first.name; FUZZ.tool=first.name; } }
   }
-  const wsel=$("fzWordlist"); if(wsel && FUZZ_META.wordlists){
+  if(FUZZ_META.wordlists){
     const groups={}; FUZZ_META.wordlists.forEach(w=>{ (groups[w.group]=groups[w.group]||[]).push(w); });
-    wsel.innerHTML=`<option value="">— choose a wordlist —</option>`+Object.entries(groups).map(([g,ws])=>
-      `<optgroup label="${esc(g)}">`+ws.map(w=>`<option value="${esc(w.path)}">${esc(w.name)} · ${w.lines>=0?w.lines.toLocaleString()+" lines":w.human}</option>`).join("")+`</optgroup>`).join("");
-    if(FUZZ.wordlist) wsel.value=FUZZ.wordlist;
+    const opts=Object.entries(groups).map(([g,ws])=>`<optgroup label="${esc(g)}">`+ws.map(w=>`<option value="${esc(w.path)}">${esc(w.name)} · ${w.lines>=0?w.lines.toLocaleString()+" lines":w.human}</option>`).join("")+`</optgroup>`).join("");
+    const wsel=$("fzWordlist"); if(wsel){ wsel.innerHTML=`<option value="">— choose a wordlist —</option>`+opts; if(FUZZ.wordlist) wsel.value=FUZZ.wordlist; }
+    const w2=$("fzWordlist2"); if(w2){ w2.innerHTML=`<option value="">— none —</option>`+opts; if(FUZZ.wordlist2) w2.value=FUZZ.wordlist2; }
   }
   updateToolHints();
 }
@@ -680,6 +680,13 @@ function fuzzFormHTML(){
   const fromScan = liveHosts.length ? `<label class="fl" style="max-width:260px">from scan
       <select id="fzFromScan"><option value="">— live hosts (${liveHosts.length}) —</option>${liveHosts.map(h=>`<option value="${esc(h.url)}">${esc(h.host)}</option>`).join("")}</select></label>` : "";
   return `<div class="fz" id="fzForm">
+    <div class="row" style="gap:6px;align-items:center">
+      <span class="small">profile</span>
+      <select id="fzProfileSel" class="modelsel"></select>
+      <button class="iconbtn" id="fzProfLoad">Load</button>
+      <button class="iconbtn" id="fzProfSave">Save…</button>
+      <button class="iconbtn rm" id="fzProfDel">✕</button>
+    </div>
     <div class="row">
       <label class="fl">method
         <select id="fzMethod" class="method">${["GET","POST","PUT","PATCH","DELETE","HEAD","OPTIONS"].map(m=>`<option ${FUZZ.method===m?"selected":""}>${m}</option>`).join("")}</select></label>
@@ -690,11 +697,13 @@ function fuzzFormHTML(){
       <button id="fzStop" class="ghost" style="align-self:flex-end" ${FUZZ.running?"":"disabled"}>■ Stop</button>
     </div>
     <div class="row" style="align-items:flex-end">
-      <label class="fl" style="flex:1;min-width:240px">wordlist <span class="small">(from /opt, SecLists, ~/.reconmind)</span>
+      <label class="fl" style="flex:1;min-width:200px">wordlist <span class="small">(FUZZ)</span>
         <select id="fzWordlist"></select></label>
-      <label class="fl" style="max-width:200px">tool
+      <label class="fl" style="flex:1;min-width:160px">2nd wordlist <span class="small">(FUZ2 — optional, multi-fuzz, ffuf)</span>
+        <select id="fzWordlist2"></select></label>
+      <label class="fl" style="max-width:160px">tool
         <select id="fzTool"></select></label>
-      <span class="small" id="fzToolHint" style="max-width:240px"></span>
+      <span class="small" id="fzToolHint" style="max-width:200px"></span>
     </div>
     <div class="grp">
       <h4>Headers <span class="small">(sent with every request)</span></h4>
@@ -735,11 +744,26 @@ function readHeaderRows(){
 function syncFuzzState(){
   const g=(id)=>$(id)?$(id).value:"";
   FUZZ.method=g("fzMethod")||"GET"; FUZZ.url=g("fzUrl"); FUZZ.tool=g("fzTool")||FUZZ.tool;
-  FUZZ.wordlist=g("fzWordlist"); FUZZ.extensions=g("fzExt"); FUZZ.match_codes=g("fzMatch");
+  FUZZ.wordlist=g("fzWordlist"); FUZZ.wordlist2=g("fzWordlist2"); FUZZ.extensions=g("fzExt"); FUZZ.match_codes=g("fzMatch");
   FUZZ.filter_codes=g("fzFilter"); FUZZ.threads=parseInt(g("fzThreads"))||40; FUZZ.rps=parseInt(g("fzRps"))||0;
   FUZZ.recursion=parseInt(g("fzRecursion"))||0; FUZZ.data=g("fzData"); FUZZ.quick_wins=$("fzQuick")?$("fzQuick").checked:false;
   readHeaderRows();
 }
+// ---------- saved profiles (shared by Fuzzer + Nuclei) ----------
+let PROFILES = { fuzz:{}, nuclei:{} };
+async function loadProfiles(){ try{ PROFILES=await (await fetch("/api/profiles")).json(); }catch(e){ PROFILES={fuzz:{},nuclei:{}}; } }
+function fillProfileSel(id, kind){ const s=$(id); if(!s) return; const names=Object.keys(PROFILES[kind]||{}).sort(); s.innerHTML=`<option value="">— profiles (${names.length}) —</option>`+names.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join(""); }
+async function saveProfilePrompt(kind, cfg, selId){
+  const name=prompt("Save profile as:"); if(!name||!name.trim()) return;
+  const r=await fetch("/api/profiles",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({kind,name:name.trim(),config:cfg})});
+  if(!r.ok){ const d=await r.json().catch(()=>({})); alert(d.detail||"save failed"); return; }
+  await loadProfiles(); fillProfileSel(selId,kind); const s=$(selId); if(s) s.value=name.trim();
+}
+async function deleteProfileSel(kind, selId){ const n=$(selId)&&$(selId).value; if(!n) return; if(!confirm(`Delete profile "${n}"?`)) return; await fetch(`/api/profiles/${kind}/${encodeURIComponent(n)}`,{method:"DELETE"}); await loadProfiles(); fillProfileSel(selId,kind); }
+
+function fuzzConfig(){ syncFuzzState(); return {method:FUZZ.method,tool:FUZZ.tool,wordlist:FUZZ.wordlist,wordlist2:FUZZ.wordlist2,extensions:FUZZ.extensions,match_codes:FUZZ.match_codes,filter_codes:FUZZ.filter_codes,threads:FUZZ.threads,rps:FUZZ.rps,recursion:FUZZ.recursion,quick_wins:FUZZ.quick_wins,headers:FUZZ.headers}; }
+function applyFuzzConfig(cfg){ Object.assign(FUZZ,{method:cfg.method||"GET",tool:cfg.tool||FUZZ.tool,wordlist:cfg.wordlist||"",wordlist2:cfg.wordlist2||"",extensions:cfg.extensions||"",match_codes:cfg.match_codes||"",filter_codes:cfg.filter_codes!=null?cfg.filter_codes:"404",threads:cfg.threads||40,rps:cfg.rps||0,recursion:cfg.recursion||0,quick_wins:!!cfg.quick_wins,headers:(cfg.headers&&cfg.headers.length)?cfg.headers:[{name:"",value:""}]}); buildFuzzForm(); }
+
 function buildFuzzForm(){
   $("panel").innerHTML=fuzzFormHTML();
   renderHeaderRows();
@@ -748,6 +772,10 @@ function buildFuzzForm(){
   $("fzMethod").onchange=()=>{ FUZZ.method=$("fzMethod").value; $("fzBodyWrap").hidden=!["POST","PUT","PATCH","DELETE"].includes(FUZZ.method); };
   $("fzTool").onchange=()=>{ FUZZ.tool=$("fzTool").value; updateToolHints(); };
   const fs=$("fzFromScan"); if(fs) fs.onchange=()=>{ if(fs.value){ $("fzUrl").value=fs.value; FUZZ.url=fs.value; } };
+  $("fzProfLoad").onclick=()=>{ const n=$("fzProfileSel").value; if(n&&PROFILES.fuzz[n]) applyFuzzConfig(PROFILES.fuzz[n]); };
+  $("fzProfSave").onclick=()=>saveProfilePrompt("fuzz", fuzzConfig(), "fzProfileSel");
+  $("fzProfDel").onclick=()=>deleteProfileSel("fuzz","fzProfileSel");
+  loadProfiles().then(()=>fillProfileSel("fzProfileSel","fuzz"));
   loadFuzzMeta();
 }
 function renderFuzzer(){
@@ -765,7 +793,7 @@ function startFuzz(){
   FUZZ.rows=[]; FUZZ.exposures=[]; FUZZ.running=true;
   if(FUZZ.es){ try{FUZZ.es.close();}catch(e){} }
   updateFuzzButtons(); renderFuzzResults();
-  const body={ url:FUZZ.url, tool:FUZZ.tool, wordlist:FUZZ.wordlist, method:FUZZ.method,
+  const body={ url:FUZZ.url, tool:FUZZ.tool, wordlist:FUZZ.wordlist, wordlist2:FUZZ.wordlist2, method:FUZZ.method,
     headers:FUZZ.headers.filter(h=>h.name.trim()), extensions:FUZZ.extensions,
     match_codes:FUZZ.match_codes, filter_codes:FUZZ.filter_codes, threads:FUZZ.threads,
     rps:FUZZ.rps, recursion:FUZZ.recursion, data:FUZZ.data, quick_wins:FUZZ.quick_wins,
@@ -859,7 +887,7 @@ async function loadNukeMeta(){
   const banner=$("nkBanner");
   if(banner){
     if(!NUKE_META.installed) banner.innerHTML=`<span style="color:var(--bad)">nuclei not installed</span> — <code>${esc(NUKE_META.install||"go install …/nuclei")}</code>`;
-    else banner.innerHTML=`nuclei <b>${esc(NUKE_META.version||"")}</b> · ${(NUKE_META.modules||[]).length} module folders · templates: <code>${esc(NUKE_META.templates_dir||"?")}</code>`;
+    else banner.innerHTML=`nuclei <b>${esc(NUKE_META.version||"")}</b> · ${(NUKE_META.modules||[]).length} module folders · templates: <code>${esc(NUKE_META.templates_dir||"?")}</code>`+(/^v[012](\.|$)/.test(NUKE_META.version||"")?` · <span style="color:var(--warn)">v3 available — <code>go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest</code></span>`:"");
   }
   const msel=$("nkModules");
   if(msel && NUKE_META.modules){ msel.innerHTML=NUKE_META.modules.map(m=>`<option value="${esc(m.path)}" ${NUKE.modules.includes(m.path)?"selected":""}>${esc(m.path)} (${m.count})</option>`).join(""); }
@@ -872,6 +900,13 @@ function nukeFormHTML(){
   const sevChip=(s)=>`<label class="chk" style="gap:5px"><input type="checkbox" class="nkSev" value="${s}" ${NUKE.severity.has(s)?"checked":""}> <span class="sev ${s}">${s}</span></label>`;
   return `<div class="fz" id="nkForm">
     <div class="nkbanner small" id="nkBanner"></div>
+    <div class="row" style="gap:6px;align-items:center;margin-bottom:2px">
+      <span class="small">profile</span>
+      <select id="nkProfileSel" class="modelsel"></select>
+      <button class="iconbtn" id="nkProfLoad">Load</button>
+      <button class="iconbtn" id="nkProfSave">Save…</button>
+      <button class="iconbtn rm" id="nkProfDel">✕</button>
+    </div>
     <div class="grp">
       <h4>Targets <span class="small">— one per line; a single line uses -u, many use a temp -l file</span></h4>
       <textarea id="nkTargets" style="min-height:70px" placeholder="https://target.com&#10;https://api.target.com">${esc(NUKE.targets)}</textarea>
@@ -884,6 +919,7 @@ function nukeFormHTML(){
       <h4>What to run <span class="small">— combine any of these; leave ALL blank = full scan (every template)</span></h4>
       <div class="row" style="align-items:flex-start;gap:16px">
         <label class="fl" style="min-width:220px">module folders <span class="small">(Cmd/Ctrl-click for several)</span>
+          <input type="text" id="nkModSearch" placeholder="search modules… (e.g. cve, exposure)" style="margin-bottom:4px">
           <select id="nkModules" multiple size="8" style="min-width:240px"></select></label>
         <div style="flex:1;min-width:220px">
           <label class="fl">tags <span class="small">(comma separated)</span>
@@ -923,11 +959,24 @@ function syncNukeState(){
   NUKE.bulk_size=parseInt(g("nkBulk"))||25; NUKE.timeout=parseInt(g("nkTimeout"))||10;
   NUKE.retries=parseInt(g("nkRetries"))||1; NUKE.deadline=parseInt(g("nkDeadline"))||900;
 }
+function nukeConfig(){ syncNukeState(); return {modules:NUKE.modules,tags:NUKE.tags,severity:Array.from(NUKE.severity),template_path:NUKE.template_path,rate_limit:NUKE.rate_limit,concurrency:NUKE.concurrency,bulk_size:NUKE.bulk_size,timeout:NUKE.timeout,retries:NUKE.retries}; }
+function applyNukeConfig(cfg){ NUKE.modules=cfg.modules||[]; NUKE.tags=cfg.tags||""; NUKE.severity=new Set(cfg.severity||[]); NUKE.template_path=cfg.template_path||""; NUKE.rate_limit=cfg.rate_limit||150; NUKE.concurrency=cfg.concurrency||25; NUKE.bulk_size=cfg.bulk_size||25; NUKE.timeout=cfg.timeout||10; NUKE.retries=cfg.retries||1; buildNukeForm(); }
+function filterNukeModules(q){
+  const msel=$("nkModules"); if(!msel||!NUKE_META) return;
+  const sel=new Set(Array.from(msel.selectedOptions).map(o=>o.value)); const ql=(q||"").toLowerCase();
+  const mods=(NUKE_META.modules||[]).filter(m=>!ql||m.path.toLowerCase().includes(ql));
+  msel.innerHTML=mods.map(m=>`<option value="${esc(m.path)}" ${sel.has(m.path)||NUKE.modules.includes(m.path)?"selected":""}>${esc(m.path)} (${m.count})</option>`).join("");
+}
 function buildNukeForm(){
   $("panel").innerHTML=nukeFormHTML();
   $("nkStart").onclick=startNuclei; $("nkStop").onclick=stopNuclei;
   $("nkClearTargets").onclick=()=>{ $("nkTargets").value=""; NUKE.targets=""; };
   const fs=$("nkFromScan"); if(fs) fs.onclick=()=>{ const urls=(scanData.hosts||[]).filter(h=>h.live&&h.url).map(h=>h.url); const cur=$("nkTargets").value.trim(); $("nkTargets").value=(cur?cur+"\n":"")+urls.join("\n"); NUKE.targets=$("nkTargets").value; };
+  $("nkProfLoad").onclick=()=>{ const n=$("nkProfileSel").value; if(n&&PROFILES.nuclei[n]) applyNukeConfig(PROFILES.nuclei[n]); };
+  $("nkProfSave").onclick=()=>saveProfilePrompt("nuclei", nukeConfig(), "nkProfileSel");
+  $("nkProfDel").onclick=()=>deleteProfileSel("nuclei","nkProfileSel");
+  const ms=$("nkModSearch"); if(ms) ms.oninput=()=>{ filterNukeModules(ms.value); refocusEl("nkModSearch"); };
+  loadProfiles().then(()=>fillProfileSel("nkProfileSel","nuclei"));
   loadNukeMeta();
 }
 function renderNuclei(){ if(!$("nkForm")) buildNukeForm(); renderNukeResults(); }

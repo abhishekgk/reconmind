@@ -392,9 +392,14 @@ _FFUF_RE = re.compile(
 
 async def _run_ffuf(opts, base_url, fuzz_url, wl, exts, headers,
                     on_result, on_progress) -> None:
-    # No -s: ffuf prints each hit to stdout AS IT FINDS IT, so we stream them
-    # live instead of waiting for a JSON report at the very end.
-    cmd = ["ffuf", "-u", fuzz_url, "-w", wl, "-ac", "-t", str(opts["threads"]),
+    # Multi-FUZZ: a second wordlist bound to the FUZ2 keyword (needs FUZ2 in the
+    # URL). With two keywords, stdout can't be parsed unambiguously, so we use
+    # ffuf's JSON report (its 'url' field is fully substituted).
+    wl2 = (opts.get("wordlist2") or "").strip()
+    multi = bool(wl2) and _allowed_wordlist(wl2) and "FUZ2" in fuzz_url
+    w_flags = ["-w", f"{wl}:FUZZ", "-w", f"{wl2}:FUZ2"] if multi else ["-w", wl]
+    # No -s (single): ffuf prints each hit to stdout AS IT FINDS IT (live).
+    cmd = ["ffuf", "-u", fuzz_url] + w_flags + ["-ac", "-t", str(opts["threads"]),
            "-maxtime", str(int(opts["deadline"])), "-mc",
            opts.get("match_codes") or "all"]
     if opts.get("filter_codes"):
@@ -412,6 +417,27 @@ async def _run_ffuf(opts, base_url, fuzz_url, wl, exts, headers,
     depth = int(opts.get("recursion") or 0)
     if depth > 0:
         cmd += ["-recursion", "-recursion-depth", str(depth)]
+
+    if multi:
+        on_progress(f"ffuf multi-FUZZ → {Path(wl).name} × {Path(wl2).name}")
+        tmp = tempfile.NamedTemporaryFile("r", suffix=".json", delete=False)
+        tmp.close()
+        cmd += ["-of", "json", "-o", tmp.name, "-s"]
+        from .runners import _run
+        await _run(cmd, timeout=int(opts["deadline"]) + 15)
+        try:
+            data = json.loads(Path(tmp.name).read_text())
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+        for r in data.get("results", [])[:RESULT_CAP]:
+            on_result(_row(r.get("url", ""), base_url, r.get("status"),
+                           size=r.get("length"), words=r.get("words"),
+                           lines=r.get("lines"), redirect=r.get("redirectlocation", ""),
+                           source="ffuf"))
+        return
+
     on_progress(f"ffuf → {fuzz_url}  (wordlist: {Path(wl).name})")
     count = [0]
 
