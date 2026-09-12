@@ -16,6 +16,11 @@ data/
 shots/
 keys.json
 *.keys.json
+auth.json
+settings.json
+scope.json
+monitors.json
+profiles.json
 subfinder-provider-config.yaml
 resolvers.txt
 wordlist.txt
