@@ -226,6 +226,22 @@ async def run_scan(scan: Scan) -> Scan:
         scan._record("reverse-dns", {n for n in ptrs.values()
                                      if n.endswith("." + scan.domain) or n == scan.domain})
 
+        # Harvest in-scope hostnames from TLS certs across the org's netblocks.
+        scan.emit("phase", phase="Harvesting cert SANs from netblocks (tlsx)")
+        san_names = await network.tlsx_netblocks(prefixes, scan.domain)
+        before = len(scan.found)
+        scan._record("tlsx-netblock", san_names)
+        new_names = [h for h in san_names if h not in scan.resolved]
+        if new_names:
+            newly = await resolve.resolve(new_names)
+            scan.resolved.update(newly)
+            fresh = await resolve.probe_live(list(newly.keys()))
+            existing = {l["host"] for l in scan.live}
+            scan.live.extend(f for f in fresh if f["host"] not in existing)
+            scan.emit("resolved", count=len(scan.resolved))
+            scan.emit("live", count=len(scan.live))
+        scan.emit("phase", phase=f"Netblock certs added {len(scan.found) - before} names")
+
     # --- 8. Port scan resolved IPs with naabu (deep) -------------------------
     if scan.deep:
         naabu_ports = await ports.scan_ports(

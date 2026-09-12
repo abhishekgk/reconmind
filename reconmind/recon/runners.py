@@ -68,6 +68,21 @@ async def subfinder(domain: str) -> set[str]:
     return _clean(out.splitlines(), domain)
 
 
+async def subfinder_recursive(domain: str) -> set[str]:
+    """A second subfinder pass with -recursive (recursion-capable sources only).
+
+    -recursive narrows the source set, so we run it *in addition* to the normal
+    -all pass and union the results — it surfaces deeper names the flat pass misses.
+    """
+    if not config.tool_path("subfinder"):
+        return set()
+    cmd = ["subfinder", "-d", domain, "-silent", "-recursive"]
+    if keys.SUBFINDER_CONFIG.is_file() and keys.SUBFINDER_CONFIG.stat().st_size > 0:
+        cmd += ["-provider-config", str(keys.SUBFINDER_CONFIG)]
+    out, _, _ = await _run(cmd, timeout=180)
+    return _clean(out.splitlines(), domain)
+
+
 async def github_subdomains(domain: str) -> set[str]:
     """github-subdomains mines subdomains from code. Needs a GitHub token (env)."""
     if not config.tool_path("github-subdomains"):
@@ -144,6 +159,7 @@ DEEP_RUNNERS = {
     "amass": amass,
     "gau": gau_hosts,
     "github-subdomains": github_subdomains,
+    "subfinder-recursive": subfinder_recursive,
 }
 
 

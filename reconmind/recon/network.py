@@ -13,11 +13,72 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import re
 import socket
 
 import httpx
 
-from .. import keys
+from .. import config, keys
+
+_HOST_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9\-_.]{0,253}[A-Za-z0-9])?")
+
+
+async def tlsx_netblocks(prefixes: list[str], domain: str, deadline: float = 180,
+                         max_prefixes: int = 12) -> set[str]:
+    """Harvest in-scope hostnames from TLS certs across the org's netblocks.
+
+    Runs tlsx over the discovered BGP prefixes and keeps SAN/CN names that belong
+    to the target — this finds hosts on IPs that aren't tied to any known DNS name
+    yet. Only smallish prefixes (>= /20, i.e. <= 4096 IPs) are scanned so a big
+    netblock can't blow up the scan; bounded by a deadline. Deep mode only.
+    """
+    if not config.tool_path("tlsx") or not prefixes:
+        return set()
+    small = []
+    for p in prefixes:
+        try:
+            if int(p.split("/")[1]) >= 20:
+                small.append(p)
+        except (IndexError, ValueError):
+            continue
+    small = small[:max_prefixes]
+    if not small:
+        return set()
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "tlsx", "-silent", "-san", "-cn", "-resp-only", "-p", "443",
+            "-c", "150", stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    except (FileNotFoundError, OSError):
+        return set()
+    proc.stdin.write(("\n".join(small)).encode())
+    proc.stdin.close()
+    dom = domain.lower().lstrip(".")
+    found: set[str] = set()
+    loop = asyncio.get_running_loop()
+    end = loop.time() + deadline
+    try:
+        while True:
+            remaining = end - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+            except asyncio.TimeoutError:
+                break
+            if not line:
+                break
+            h = line.decode(errors="replace").strip().lower().rstrip(".").lstrip("*.")
+            if (h == dom or h.endswith("." + dom)) and _HOST_RE.fullmatch(h):
+                found.add(h)
+    finally:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+                await proc.wait()
+            except ProcessLookupError:
+                pass
+    return found
 
 
 async def _dig_txt(name: str, timeout: int = 8) -> list[str]:
