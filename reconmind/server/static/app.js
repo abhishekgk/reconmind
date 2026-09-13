@@ -1216,7 +1216,10 @@ function renderPortResults(){
     rows.slice(0,2000).map(r=>`<tr><td class="mono">${esc(r.ip)}${r.host&&r.host!==r.ip?` <span class="muted">(${esc(r.host)})</span>`:''}</td><td><span class="port">${r.port}</span></td><td class="muted">${esc(r.product||r.service||"")}</td><td><span class="tag">${esc(r.source)}</span></td></tr>`).join("")+`</tbody></table>`;
 }
 async function startPorts(){
-  const targets=ptSelected(); if(!targets.length){ $("ptPhase").textContent="⚠ select at least one target"; return; }
+  const picked=ptSelected();
+  const pasted=(($("ptPaste")&&$("ptPaste").value)||"").split(/[\s,]+/).map(s=>s.trim().replace(/^https?:\/\//i,"").split("/")[0]).filter(Boolean);
+  const targets=Array.from(new Set(picked.concat(pasted)));
+  if(!targets.length){ $("ptPhase").textContent="⚠ select or paste at least one target"; return; }
   const body={ scan_id:currentScanId, targets, engine:$("ptEngine").value, preset:$("ptPreset").value,
     ports:$("ptCustom").value, rate:parseInt($("ptRate").value)||1000, concurrency:parseInt($("ptConc").value)||50,
     service:$("ptService").checked, deadline:parseInt($("ptDeadline").value)||300 };

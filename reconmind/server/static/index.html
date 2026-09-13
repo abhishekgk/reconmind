@@ -329,7 +329,9 @@
         <div style="flex:1;min-width:240px">
           <div class="small">targets <span id="ptCount"></span> —
             <a href="#" id="ptAll">all</a> · <a href="#" id="ptIps">IPs only</a> · <a href="#" id="ptNone">none</a></div>
-          <div id="ptTargets" style="max-height:250px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-top:6px;font-size:12px"></div>
+          <div id="ptTargets" style="max-height:200px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-top:6px;font-size:12px"></div>
+          <div class="small" style="margin-top:8px">…or paste your own (one per line, subdomains or IPs — added to any ticked above)</div>
+          <textarea id="ptPaste" placeholder="sub1.target.com&#10;sub2.target.com&#10;93.184.215.14" style="width:100%;min-height:80px;margin-top:4px;background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:12px"></textarea>
         </div>
         <div style="width:300px">
           <label class="fl" style="display:block">ports<select id="ptPreset" class="modelsel" style="width:100%;max-width:none">
@@ -515,6 +517,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=23"></script>
+<script src="/static/app.js?v=24"></script>
 </body>
 </html>
